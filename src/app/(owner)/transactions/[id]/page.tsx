@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { apiDeps } from "../../../api/deps";
-import { getTransactionWithTimeline, type TimelineStep } from "../../../../services/transaction-queries";
+import { getTransactionWithReplay } from "../../../../services/replay-queries";
+import type { TimelineStep } from "../../../../services/transaction-queries";
 import { counterparty, ENTRY_LABELS, providerLabel, TYPE_LABELS, type TransactionType } from "../../../_components/labels";
 import { LocalTime } from "../../../_components/local-time";
 import { Money } from "../../../_components/money";
@@ -108,7 +109,7 @@ export default async function TransactionPage({ params }: { params: Promise<{ id
   const parsed = transactionIdParams.safeParse(await params);
   if (!parsed.success) notFound();
   const db = apiDeps().db;
-  const trace = await getTransactionWithTimeline(db, session.accountId, parsed.data.id);
+  const trace = await getTransactionWithReplay(db, session.accountId, parsed.data.id);
   if (!trace) notFound();
   const { detail, steps } = trace;
 

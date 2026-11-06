@@ -1,5 +1,5 @@
 import { and, asc, eq } from "drizzle-orm";
-import type { Db } from "../db/client";
+import type { Db, Tx } from "../db/client";
 import { accounts, businesses, cards, holds } from "../db/schema";
 import { balanceExplanationLines, explainBalance } from "../domain/ledger";
 
@@ -35,19 +35,21 @@ export type AccountSummary = NonNullable<Awaited<ReturnType<typeof getAccountSum
  * add up (a settlement commits its debit and hold release together).
  */
 export async function getBalance(db: Db, accountId: string) {
-  return db.transaction(async (tx) => {
-    const [account] = await tx
-      .select({ ledgerBalanceCents: accounts.ledgerBalanceCents, currency: accounts.currency })
-      .from(accounts)
-      .where(eq(accounts.id, accountId));
-    if (!account) return null;
-    const active = await tx
-      .select({ kind: holds.kind, status: holds.status, amountCents: holds.amountCents })
-      .from(holds)
-      .where(and(eq(holds.accountId, accountId), eq(holds.status, "ACTIVE")));
-    const explanation = explainBalance(account.ledgerBalanceCents, active);
-    return { currency: account.currency, ...explanation, explanation: balanceExplanationLines(explanation) };
-  }, READ_SNAPSHOT);
+  return db.transaction((tx) => readBalance(tx, accountId), READ_SNAPSHOT);
 }
 
-export type Balance = NonNullable<Awaited<ReturnType<typeof getBalance>>>;
+export async function readBalance(tx: Tx, accountId: string) {
+  const [account] = await tx
+    .select({ ledgerBalanceCents: accounts.ledgerBalanceCents, currency: accounts.currency })
+    .from(accounts)
+    .where(eq(accounts.id, accountId));
+  if (!account) return null;
+  const active = await tx
+    .select({ kind: holds.kind, status: holds.status, amountCents: holds.amountCents })
+    .from(holds)
+    .where(and(eq(holds.accountId, accountId), eq(holds.status, "ACTIVE")));
+  const explanation = explainBalance(account.ledgerBalanceCents, active);
+  return { currency: account.currency, ...explanation, explanation: balanceExplanationLines(explanation) };
+}
+
+export type Balance = NonNullable<Awaited<ReturnType<typeof readBalance>>>;
