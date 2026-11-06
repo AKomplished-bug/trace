@@ -111,7 +111,7 @@ export async function getTransactionDetail(db: Db, accountId: string, transactio
   return db.transaction((tx) => readDetail(tx, accountId, transactionId), READ_SNAPSHOT);
 }
 
-async function readDetail(tx: Tx, accountId: string, transactionId: string) {
+export async function readDetail(tx: Tx, accountId: string, transactionId: string) {
   const [transaction] = await summaries(tx).where(
     and(eq(transactions.id, transactionId), eq(transactions.accountId, accountId)),
   );
@@ -193,17 +193,7 @@ export async function getTimeline(db: Db, accountId: string, transactionId: stri
   return db.transaction((tx) => readTimeline(tx, accountId, transactionId), READ_SNAPSHOT);
 }
 
-/** Detail and money trace from one snapshot, so the header and the timeline always agree. */
-export async function getTransactionWithTimeline(db: Db, accountId: string, transactionId: string) {
-  return db.transaction(async (tx) => {
-    const detail = await readDetail(tx, accountId, transactionId);
-    if (!detail) return null;
-    const steps = await readTimeline(tx, accountId, transactionId);
-    return steps ? { detail, steps } : null;
-  }, READ_SNAPSHOT);
-}
-
-async function readTimeline(tx: Tx, accountId: string, transactionId: string) {
+export async function readTimeline(tx: Tx, accountId: string, transactionId: string) {
   const [owned] = await tx
     .select({ id: transactions.id })
     .from(transactions)

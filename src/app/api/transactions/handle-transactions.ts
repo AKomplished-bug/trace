@@ -1,3 +1,4 @@
+import { getTransactionReplay } from "../../../services/replay-queries";
 import { getTimeline, getTransactionDetail, listTransactions } from "../../../services/transaction-queries";
 import { searchParamsObject, transactionIdParams, transactionListQuery } from "../../_lib/schemas";
 import { invalidRequest, withRequestLog, type HandlerDeps } from "../handler";
@@ -44,5 +45,25 @@ export async function handleGetTimeline(deps: HandlerDeps, request: Request, par
     annotate({ transaction_id: parsed.data.id });
     const steps = await getTimeline(deps.db, owner.accountId, parsed.data.id);
     return steps ? Response.json({ transactionId: parsed.data.id, steps }) : notFound();
+  });
+}
+
+/**
+ * GET /api/transactions/:id/replay — the money trace re-run step by step from the account state
+ * before it, checked against the recorded balances, plus the money graph. Read-only.
+ */
+export async function handleGetReplay(deps: HandlerDeps, request: Request, params: { id: string }): Promise<Response> {
+  return withRequestLog(deps, "GET /api/transactions/:id/replay", async ({ log, annotate }) => {
+    const owner = await requireOwner(request);
+    if (owner instanceof Response) return owner;
+    annotate({ user_id: owner.userId, account_id: owner.accountId });
+    const parsed = transactionIdParams.safeParse(params);
+    if (!parsed.success) return invalidRequest(parsed.error);
+    annotate({ transaction_id: parsed.data.id });
+    // A mismatch is logged by the reader, the same as when a page reads it.
+    const replay = await getTransactionReplay(deps.db, owner.accountId, parsed.data.id, log);
+    if (!replay) return notFound();
+    annotate({ replay_consistent: replay.consistent });
+    return Response.json(replay);
   });
 }
