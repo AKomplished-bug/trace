@@ -1,5 +1,6 @@
 import Stripe from "stripe";
 import { z } from "zod";
+import type { FundingEvent } from "../../domain/funding";
 import {
   PaymentProviderError,
   WebhookVerificationError,
@@ -26,6 +27,12 @@ export const STRIPE_IGNORED_EVENT_TYPES = [
   "charge.failed",
   "charge.updated",
 ] as const;
+
+/** Stripe event types that carry a funding outcome, and the internal event each maps to. */
+export const STRIPE_FUNDING_EVENTS: Readonly<Record<string, FundingEvent>> = {
+  "payment_intent.succeeded": "FUNDING_CONFIRMED",
+  "payment_intent.payment_failed": "FUNDING_FAILED",
+};
 
 export interface StripeAdapterOptions {
   secretKey?: string;
@@ -65,6 +72,7 @@ export function toProviderPayment(intent: Stripe.PaymentIntent, requestId: strin
 
 /** Stripe through the `PaymentProvider` interface. Retries are ours, so the SDK never retries. */
 export class StripeAdapter implements PaymentProvider {
+  readonly name = STRIPE_PROVIDER;
   private client: Stripe | undefined;
 
   constructor(private readonly options: StripeAdapterOptions) {}

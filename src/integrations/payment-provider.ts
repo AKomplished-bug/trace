@@ -62,6 +62,8 @@ export class PaymentProviderError extends Error {
 }
 
 export interface PaymentProvider extends WebhookVerifier {
+  /** Our provider name, as stored in `transactions.provider` and `external_events.provider`. */
+  readonly name: string;
   /** Creates and confirms a payment. A decline returns a `FAILED` payment; other failures throw `PaymentProviderError`. */
   createFundingPayment(input: CreateFundingPaymentInput): Promise<ProviderPayment>;
   /** Throws `PaymentProviderError` on failure. */

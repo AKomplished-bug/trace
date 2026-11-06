@@ -1,6 +1,8 @@
 import type { Tx } from "../db/client";
 import type { externalEvents } from "../db/schema";
+import { STRIPE_IGNORED_EVENT_TYPES, STRIPE_PROVIDER } from "../integrations/stripe";
 import type { Logger } from "../lib/logger";
+import { configuredStripe, stripeHandlers } from "./stripe";
 
 export type ExternalEvent = typeof externalEvents.$inferSelect;
 
@@ -31,4 +33,12 @@ export function handlerKey(provider: string, eventType: string): string {
   return `${provider}:${eventType}`;
 }
 
-export const routing: EventRouting = { handlers: {}, ignored: {} };
+/** Prefixes each provider's handlers (keyed by event type) with the provider name. */
+function forProvider(provider: string, handlers: Record<string, EventHandler>): Record<string, EventHandler> {
+  return Object.fromEntries(Object.entries(handlers).map(([eventType, handler]) => [handlerKey(provider, eventType), handler]));
+}
+
+export const routing: EventRouting = {
+  handlers: { ...forProvider(STRIPE_PROVIDER, stripeHandlers(configuredStripe)) },
+  ignored: { [STRIPE_PROVIDER]: STRIPE_IGNORED_EVENT_TYPES },
+};
