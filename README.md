@@ -14,7 +14,7 @@ Needs Node 22.12+ (developed on 26), npm and Docker.
 
 ```sh
 npm ci
-cp .env.example .env    # local defaults work as-is; funding needs the Stripe keys below
+cp .env.example .env    # then set the two Stripe test keys (see below); the rest works as-is
 npm run db:up           # Postgres 16 on localhost:5433 with databases trace and trace_test
 npm run db:migrate      # apply src/db/migrations to DATABASE_URL
 npm run db:seed         # Acme Inc., an owner and an ops user, a $0 USD account, one virtual card
@@ -29,8 +29,9 @@ npm run worker          # event worker; run several to process in parallel, Ctrl
 
 ### Funding with Stripe test mode
 
-Funding uses a Stripe **test-mode** account (no real money). Put its test secret key in `.env`
-as `STRIPE_SECRET_KEY=sk_test_…`, then forward webhooks to the local app with the
+Funding uses a Stripe **test-mode** account (no real money). The web app and worker refuse to
+start without `STRIPE_SECRET_KEY` (test keys only; `sk_live_` is rejected) and
+`STRIPE_WEBHOOK_SECRET`. Put the test secret key in `.env` as `STRIPE_SECRET_KEY=sk_test_…`, then forward webhooks to the local app with the
 [Stripe CLI](https://docs.stripe.com/stripe-cli):
 
 ```sh

@@ -35,8 +35,8 @@ export const STRIPE_FUNDING_EVENTS: Readonly<Record<string, FundingEvent>> = {
 };
 
 export interface StripeAdapterOptions {
-  secretKey?: string;
-  webhookSecret?: string;
+  secretKey: string;
+  webhookSecret: string;
   /** Tests pass `Stripe.createFetchHttpClient(fake)`; never call real Stripe from tests. */
   httpClient?: Stripe.HttpClient;
   timeoutMs?: number;
@@ -78,7 +78,6 @@ export class StripeAdapter implements PaymentProvider {
   constructor(private readonly options: StripeAdapterOptions) {}
 
   verifyWebhook(rawBody: string, headers: Headers): VerifiedWebhook {
-    if (!this.options.webhookSecret) throw new Error("STRIPE_WEBHOOK_SECRET is not set");
     const signature = headers.get("stripe-signature");
     if (!signature) throw new WebhookVerificationError();
     try {
@@ -126,7 +125,6 @@ export class StripeAdapter implements PaymentProvider {
   }
 
   private stripe(): Stripe {
-    if (!this.options.secretKey) throw new PaymentProviderError("STRIPE_SECRET_KEY is not set", null);
     this.client ??= new Stripe(this.options.secretKey, {
       timeout: this.options.timeoutMs ?? STRIPE_TIMEOUT_MS,
       maxNetworkRetries: 0,
