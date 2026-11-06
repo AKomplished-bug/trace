@@ -1,5 +1,5 @@
 import { asc, eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withTransaction } from "../../../db/client";
 import { transactionEvents, transactions } from "../../../db/schema";
 import { SEED } from "../../../db/seed";
@@ -19,6 +19,16 @@ import { handleFunding } from "./handle-funding";
 const { pool, db } = createTestDb(20);
 let fake: FakeStripe;
 
+// Lets a test stand in for the session check refusing the request.
+const auth = vi.hoisted(() => ({ deny: false }));
+vi.mock("../session", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../session")>();
+  return {
+    requireOwner: async (request: Request) =>
+      auth.deny ? Response.json({ error: { code: "unauthorized", message: "Sign in first" } }, { status: 401 }) : real.requireOwner(request),
+  };
+});
+
 function post(body: unknown, idempotencyKey: string | null = "key-1") {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (idempotencyKey !== null) headers["idempotency-key"] = idempotencyKey;
@@ -37,6 +47,7 @@ async function fundingRows() {
 const creates = () => fake.requests.filter((r) => r.method === "POST");
 
 beforeEach(async () => {
+  auth.deny = false;
   await resetDb(db);
   fake = createFakeStripe({ timeoutMs: 50 });
 });
@@ -124,6 +135,15 @@ describe("POST /api/funding", () => {
     expect(creates().map((r) => r.idempotencyKey)).toEqual([providerIdempotencyKey(pending.id), providerIdempotencyKey(pending.id)]);
     expect(await fundingRows()).toHaveLength(1);
     expect(await db.$count(transactionEvents)).toBe(1);
+  });
+
+  it("checks auth before anything else: a refused request is never validated or stored", async () => {
+    auth.deny = true;
+    const response = await post("{not json", null);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: { code: "unauthorized", message: "Sign in first" } });
+    expect(await fundingRows()).toHaveLength(0);
+    expect(fake.requests).toHaveLength(0);
   });
 
   it("validates the Idempotency-Key and body with useful messages", async () => {

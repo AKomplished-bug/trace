@@ -1,10 +1,11 @@
 import { SEED } from "../../db/seed";
 
 /**
- * The account the request acts on. Pre-auth for now: always the seeded demo account. The session
- * work replaces this body with the signed-in owner's account; callers don't change.
+ * Auth contract for owner routes: call it FIRST, before validating input, and return the
+ * Response if you get one (401 not signed in, 403 not an owner). Pre-auth for now: always the
+ * seeded owner and account; the session work replaces this body only.
  */
-export async function currentAccountId(request: Request): Promise<string> {
+export async function requireOwner(request: Request): Promise<{ userId: string; accountId: string } | Response> {
   void request;
-  return SEED.accountId;
+  return { userId: SEED.ownerUserId, accountId: SEED.accountId };
 }
