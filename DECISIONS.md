@@ -526,3 +526,117 @@ Until Ops resolves it, the ledger and Increase disagree for that card payment: I
 (or held) money that our ledger and available balance don't show. Resolution needs the Ops tools
 — a manual `ADJUSTMENT` with an audit note, then marking the event resolved — which come with the
 Ops work; today the only signal is the `FAILED` event and its `UnsupportedCardElementError`.
+
+## 2026-11-07 — Replay folds the recorded trace and checks every step against it
+
+**Decision**
+Replay (`domain/replay`) is a pure fold: `state = initial; for row in trace: state = apply(state,
+row)`, with state = ledger, available, holds by id and status, transaction statuses. Each step
+yields before / after / the row / an explanation key, and is compared with the row's stored
+`ledger_balance_after_cents` / `available_after_cents`; the result is `consistent` plus the first
+divergence. `GET /api/transactions/:id/replay` and the transaction page read it in the same
+`READ_SNAPSHOT` as the detail and timeline; nothing is written or locked. Two modes:
+- **Account replay**: every row on the account in `account_seq` order from zero. Its final state
+  must equal the cached `ledger_balance_cents`, `SUM(ledger_entries)`, available and the set of
+  ACTIVE holds (`accountMismatches`). The integration tests' `balances()` invariant and the
+  `/balance` page both run it.
+- **Transaction replay**: only the transaction's rows. Other transactions' rows interleave on the
+  account, so the replay can't simply run on from the first row: the stored running balances
+  include everyone's effects. Each row is checked on its own delta instead — the start state is
+  the balances recorded by the account's previous row (`account_seq − 1`, zero for the first),
+  and whenever there is a gap in `account_seq` since this transaction's previous row, the
+  replayed balances are moved to that previous row's recorded balances and the difference is
+  reported as the step's `otherActivity`. So each step checks
+  `recorded after == recorded before + this row's own effect`, however much happens in between.
+  Consecutive rows (no gap) carry on from the replayed state, so one bad row flags only its own
+  step rather than being absorbed.
+
+Available before a row is therefore never recomputed as "ledger − this transaction's holds": it
+is the account's recorded available just before the row, which already includes every other
+transaction's active holds. Replay carries available as a number and moves it by each row's own
+effect (hold created −amount; ledger posted ±delta; hold released/expired +amount).
+
+A settlement is one database transaction that releases the hold and posts the entry, then writes
+LEDGER_POSTED and HOLD_RELEASED with the final balances (money rules 5 and 10). Replay pairs a
+LEDGER_POSTED with a HOLD_RELEASED of the same transaction at `account_seq + 1` **that recorded
+the same balances**, and applies the release with the posting (`settlement_released_hold`), so the
+steps read 500/500 → 500/420 → 435/435 → 435/435 as the account actually was; the paired
+HOLD_RELEASED changes nothing. A post and a release in two separate database transactions also
+sit at n, n + 1 but record different available balances, so they replay as a plain posting and a
+plain release. A SETTLED_AFTER_HOLD_CLOSED (late capture) releases nothing. If a pairing were ever
+wrong, the balances wouldn't match and the replay would say so. In a transaction replay each
+LEDGER_POSTED's delta is also compared with the amount of the ledger entry it points at
+(`reason: "ledger_entry"`), so drift between the trace and the ledger shows on the transaction,
+not only in the account check.
+
+**Why**
+"Replayed == stored" (CLAUDE.md) becomes something the owner can see per transaction and a test
+after every integration test, and tampering or a buggy writer surfaces at the exact step.
+Starting from the previous row rather than `first.after − first.delta` lets the first row be
+checked too; deriving it from the first row would make that step match by construction.
+
+**Alternatives**
+Recompute from ledger entries and holds tables instead of the trace (checks nothing about the
+trace); replay a transaction in isolation from zero (wrong once anything interleaves); group rows
+by database transaction (we don't record one).
+
+**Tradeoff**
+The account replay reads the whole trace on every `/balance` view — an ordered scan of
+`transaction_events_account_seq_key`, fine at sandbox volume; at scale it would run from a
+checkpoint (e.g. a periodic snapshot of balances and active holds) or as a background check.
+Only the first divergence is reported in the API's `divergence` (each step still has `matches`).
+A mismatch is logged (`replay_mismatch` with account, transaction, step and reason) by the
+service readers, so the API, the transaction page and `/balance` all report it from one place
+(`reportReplayMismatch`), which is where a counter goes once the metrics work lands. Owners see a
+plain sentence; ids and figures stay in the log.
+
+Pairing by adjacency and equal balances is a heuristic for "written in the same database
+transaction". It can't tell a settlement row tampered to exactly the two-transaction value from a
+genuine post-then-release. **Proposed long-term fix:** record the database transaction on every
+trace row (e.g. a `db_txid` column defaulting to `txid_current()`, added nullable and backfilled
+as unknown), group rows by it, and check each group's final balances; pairing, the effect-order
+rule (money rule 10) and the settlement exception then become checks rather than conventions.
+
+## 2026-11-07 — Money graph: derived from the trace, plain DOM, links to records
+
+**Decision**
+`moneyGraph` (`domain/replay/graph.ts`) derives nodes and edges for one transaction: one
+external node per provider element (`provider_ref`, else external event), the hold, the ledger
+entry, the resulting balance and linked transactions; edges `created`, `closed_by`, `posted`,
+`updated`, `reserves`, `restored`, `original_of`, `followed_by`. Nodes carry ids only (trace row,
+hold, ledger entry, our and the provider's event ids) — never `external_events.payload`. The page
+renders it as an ordered column of nodes with labelled arrows (no graph library); nodes link to
+`#step-…` / `#ledger-…` / `#event-…` anchors, which highlight and open the matching technical
+details, or to the linked transaction. The raw timeline stays on the page.
+
+**Why**
+Our graphs are short chains (authorization → hold → settlement → ledger entry → balance), so a
+column reads better on a phone than a laid-out graph and needs no dependency.
+
+**Alternatives**
+A graph layout library (dagre, react-flow); SVG with computed positions.
+
+**Tradeoff**
+Edges that skip a node are listed on the node as text rather than drawn.
+
+## 2026-11-07 — Available balance: the exact formula
+
+**Decision**
+`Available = Ledger balance − Pending card holds − Pending payments`, where ledger balance is
+`SUM(ledger_entries.amount_cents)` (cached on `accounts`), pending card holds is the sum of ACTIVE
+`CARD_AUTHORIZATION` holds and pending payments the sum of ACTIVE `PENDING_PAYMENT` holds. There
+are no "available credits" or "other reserved funds" terms (spec §12, §22.7): nothing else
+reserves or adds to available in this model, so those lines would always be $0. Available can be
+negative (an authorization approved above available). The terms, operators and formula string
+live in `domain/ledger/balance.ts`; `/balance` and the dashboard render them, and `/balance`
+lists the ACTIVE holds behind each pending term with a link to its transaction.
+
+**Why**
+The spec asks for the formula of the chosen accounting model to be written down rather than
+hard-coded in the UI.
+
+**Alternatives**
+Showing always-zero lines for the spec's extra terms.
+
+**Tradeoff**
+Adding a new kind of reservation means a new hold kind and a new term in `BALANCE_TERMS`.
