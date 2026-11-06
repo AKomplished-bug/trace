@@ -37,8 +37,9 @@ export function providerLabel(provider: string | null): string {
 }
 
 /** Who or what the money moved to or from, as far as we know it. */
-export function counterparty(t: { type: TransactionType; recipient: string | null; provider: string | null }): string {
+export function counterparty(t: { type: TransactionType; recipient: string | null; counterparty: string | null; provider: string | null }): string {
   if (t.recipient) return t.recipient;
+  if (t.counterparty) return t.counterparty;
   if (t.type === "FUNDING") return `Funding via ${providerLabel(t.provider)}`;
   if (t.type === "CARD_PURCHASE" || t.type === "CARD_REVERSAL") return "Virtual card";
   return TYPE_LABELS[t.type];

@@ -46,6 +46,8 @@ const summaryColumns = {
   provider: transactions.provider,
   providerObjectId: transactions.providerObjectId,
   relatedTransactionId: transactions.relatedTransactionId,
+  /** Merchant or other party, when the provider names one (e.g. a card purchase's merchant). */
+  counterparty: transactions.counterparty,
   createdAt: transactions.createdAt,
   updatedAt: transactions.updatedAt,
   /** Signed ledger effect once posted; null while pending. */
