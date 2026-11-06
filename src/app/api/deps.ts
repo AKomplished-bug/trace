@@ -2,6 +2,8 @@ import { createDb, createPool, type Db } from "../../db/client";
 import type { WebhookVerifier } from "../../integrations/payment-provider";
 import { STRIPE_PROVIDER, StripeAdapter } from "../../integrations/stripe";
 import { config } from "../../lib/config";
+import { safeErrorForLog } from "../../lib/errors";
+import { logger } from "../../lib/logger";
 
 export interface ApiDeps {
   db: Db;
@@ -15,14 +17,17 @@ export interface ApiDeps {
 const cache = globalThis as typeof globalThis & { traceApiDeps?: ApiDeps };
 
 /**
- * The one database pool and provider adapters for every route handler, created on first use.
- * Route handlers get the database only from here; never create another pool.
+ * The one database pool and provider adapters for every route handler and server component,
+ * created on first use. Get the database only from here; never create another pool.
  */
 export function apiDeps(): ApiDeps {
   if (!cache.traceApiDeps) {
     const env = config();
     const stripe = new StripeAdapter({ secretKey: env.STRIPE_SECRET_KEY, webhookSecret: env.STRIPE_WEBHOOK_SECRET });
-    cache.traceApiDeps = { db: createDb(createPool(env.DATABASE_URL)), stripe, webhookVerifiers: { [STRIPE_PROVIDER]: stripe } };
+    const pool = createPool(env.DATABASE_URL);
+    // An idle client losing its connection must not crash the web process.
+    pool.on("error", (error) => logger.error({ err: safeErrorForLog(error) }, "idle database client error"));
+    cache.traceApiDeps = { db: createDb(pool), stripe, webhookVerifiers: { [STRIPE_PROVIDER]: stripe } };
   }
   return cache.traceApiDeps;
 }
