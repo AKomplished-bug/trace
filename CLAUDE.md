@@ -106,7 +106,7 @@ Dependency direction: `app`, `worker` → `services` → `domain`, `db`, `integr
 | `FUNDING` | `stripe` | PaymentIntent id |
 | `CARD_PURCHASE` | `increase` | `card_payment` id |
 | `CARD_REVERSAL` | `increase` | `card_refund` element id (one transaction per refund, so partial refunds stack); `related_transaction_id` → the purchase when the refund is on the purchase's `card_payment`, else null (Increase may put a refund on its own `card_payment` with no link) |
-| `OUTBOUND_PAYMENT`, `PAYMENT_RETURN` | `increase` | `ach_transfer` id |
+| `OUTBOUND_PAYMENT`, `PAYMENT_RETURN` | `increase` | `ach_transfer` id (the return is the same transfer with the other type; `related_transaction_id` → the payment). Steps' `provider_ref`: the transfer id, or the return's `transaction_id` for return steps |
 
 The element behind each lifecycle step (settlement, reversal, return id) goes in
 `transaction_events.provider_ref`, which reconciliation matches on. For card payments it is also
@@ -145,7 +145,9 @@ authorization) moves no money, so it is a step on the purchase's trace, not a tr
   the provider's explicit ignore list become `IGNORED`.
 - **No network call inside a DB transaction or while holding a row lock.** Outbound provider
   calls happen in the worker, after commit, using a persisted intent (outbox) and the same
-  idempotency key on retries.
+  idempotency key on retries. Outbound payments: a `PENDING` `payments` row is the intent; the
+  submitter claims it like an event (`submit_attempts`, `submit_claim_token`, lease in
+  `next_submit_at`) and calls Increase with `Idempotency-Key: payment-<payment id>`.
 - Failures: exponential backoff (5 s doubling, capped at 15 min), terminal `FAILED` after 10
   attempts with a sanitized error stored (error class + our message; database errors as
   SQLSTATE and constraint name, never `detail` or values). Ops retry resets `attempts` and bumps

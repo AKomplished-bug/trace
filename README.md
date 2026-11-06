@@ -101,6 +101,41 @@ adapter only ever calls `sandbox.increase.com`). The web app and worker refuse t
    authorization. Other Increase event categories the flow emits (`pending_transaction.*`,
    `transaction.created`, …) are stored and marked `IGNORED`.
 
+### Outbound payments (ACH) with the Increase sandbox
+
+Payments use the same Increase sandbox setup as cards. `npm run increase:bootstrap` also links the
+seeded account to its Increase sandbox account, which sends the ACH transfers. Re-run it once if
+your card was linked before payments existed. Add `ach_transfer.created` and `ach_transfer.updated`
+to the event subscription, and keep `npm run worker` running: it submits payments (the outbox) as
+well as processing events.
+
+```sh
+curl -s -c /tmp/trace.jar localhost:3000/api/auth/login -H 'content-type: application/json' \
+  -d '{"userId":"00000000-0000-4000-8000-000000000011"}'
+curl -s -b /tmp/trace.jar localhost:3000/api/payments -H 'content-type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"recipientName":"Globex Supplies","accountNumber":"987654321","routingNumber":"101050001","amountCents":10000,"description":"Invoice 2468"}'
+```
+
+The response is the `PENDING` payment (account number shown as its last four digits). Available
+drops by $100 at once (a pending-payment hold) while the ledger is unchanged. Within a second the
+worker sends it to Increase with the idempotency key `payment-<id>` and it becomes `SUBMITTED`, with
+the ACH transfer id as its external reference. Then drive the network steps, using the payment's
+`id` (each returns `202` and changes nothing until Increase's webhook is processed):
+
+```sh
+P=<payment id>
+curl -s -b /tmp/trace.jar -X POST localhost:3000/api/payments/$P/submit   # sent to FedACH (trace step)
+curl -s -b /tmp/trace.jar -X POST localhost:3000/api/payments/$P/settle   # COMPLETED: ledger −$100, hold released
+curl -s -b /tmp/trace.jar -X POST localhost:3000/api/payments/$P/return \
+  -H 'content-type: application/json' -d '{"reason":"account_closed"}'   # returned (needs submit first)
+```
+
+A return before settlement makes the payment `RETURNED` and frees the hold. After settlement it
+creates a linked `PAYMENT_RETURN` crediting $100 back, and the payment stays `COMPLETED`. The owner
+**Payments** page (`/payments`) has the same send form and the lifecycle of each payment. Every
+payment opens its money trace.
+
 ## Check
 
 ```sh

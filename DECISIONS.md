@@ -640,3 +640,203 @@ Showing always-zero lines for the spec's extra terms.
 
 **Tradeoff**
 Adding a new kind of reservation means a new hold kind and a new term in `BALANCE_TERMS`.
+
+## 2026-11-07 — Outbound payments go through an outbox on `payments`, sent by the worker
+
+**Decision**
+`POST /api/payments` only writes, in one DB transaction under the account lock: the
+`OUTBOUND_PAYMENT` transaction (`PENDING`), its `payments` row, an ACTIVE `PENDING_PAYMENT` hold for
+the amount and the trace (`HOLD_CREATED`, then `STATUS_CHANGED → PENDING`). The PENDING payment row
+is the persisted intent. The worker's submitter (`src/worker/payment-submitter.ts`) claims one due
+payment per pass — `UPDATE … WHERE id = (SELECT … WHERE status = 'PENDING' AND next_submit_at <=
+now() … FOR UPDATE SKIP LOCKED)`, bumping `submit_attempts` (retry budget) and `submit_claim_token`
+(fencing) and pushing `next_submit_at` out by a 120 s lease — then, with no transaction open, calls
+Increase `POST /ach_transfers` with `Idempotency-Key: payment-<payment id>`. It records the transfer
+id and moves the payment and its transaction `PENDING → SUBMITTED` in a transaction that locks
+account → payment and checks the claim token. The worker loop takes one event and one payment per
+pass. Every minute it logs `pending_payments` and `oldest_unsubmitted_payment_age_seconds`, and each
+submission logs its `queue_age_seconds`.
+
+**Why**
+No network call in the request or under a lock. Retries come from a background job with backoff,
+and a crash at any point (before the call, after it, or before storing the id) only means the next
+claim repeats the call with the same key. Increase guarantees at most one object per key and
+returns the first transfer, so the money can't go out twice
+(https://increase.com/documentation/idempotency-keys). The key is per payment, not the client's
+key, because client keys are only unique per account. Alerting on the age of the oldest unsent
+payment catches a stuck submitter.
+
+**Alternatives**
+Call Increase in the request after commit, the way funding does. A generic claim helper shared with
+`external_events`. A separate `payment_outbox` table.
+
+**Tradeoff**
+The claim is a parallel twenty lines of SQL, not a shared helper: the two queues mean different
+things by "claimable" (events have a `PROCESSING` status, while a payment's status is a business
+status that stays `PENDING` during the lease) and use different columns. A generic helper would
+have to build table and column identifiers dynamically. The backoff (`backoffMs`) and budget (10)
+are shared. The owner sees `PENDING` until the submitter runs, usually within a second.
+
+## 2026-11-07 — The funds check runs under the account lock; a refused payment stores nothing
+
+**Decision**
+After the idempotent insert, `createPayment` computes available (ledger − active holds) while
+holding the account lock it took first. If available is below the amount it throws
+`InsufficientFundsError` (422 `insufficient_funds`) and the whole transaction rolls back, including
+the transaction row that carries the Idempotency-Key. An account with no linked Increase account is
+refused the same way (409 `account_not_linked`).
+
+**Why**
+Every writer of ledger entries and holds takes that lock first, so available can't change between
+the check and the hold insert. Concurrent payments queue on it, and only those that fit succeed
+(tested with eight concurrent payments against $500). Storing nothing means a retry with the same
+key, made after funds arrive, goes through.
+
+**Alternatives**
+A `CHECK`/trigger on available balance; `SERIALIZABLE` isolation with retries; storing the 422
+against the key so a retry replays the refusal.
+
+**Tradeoff**
+Payments on one account are serialized; that's the account's money, so it should be.
+`request_hash` is an unsalted SHA-256 of a low-entropy body that includes the account number, so it
+could be brute-forced back to it; it stays on our row and is never returned or logged. A card
+authorization that Increase approves can still push available negative afterwards (see the card
+decision); the payment check can't prevent that.
+
+## 2026-11-07 — `SUBMITTED` status and a `SUBMITTED_TO_NETWORK` trace step
+
+**Decision**
+`SUBMITTED` is added to both `transaction_status` and `payment_status` (they always move together,
+in one statement pair). It means Increase accepted the transfer. Increase's own `submitted` (it sent
+the transfer to FedACH) is a no-money trace row of a new kind, `SUBMITTED_TO_NETWORK`, not a status.
+The enum values have their own migration (0002), before the columns that use them (0003).
+
+**Why**
+The lifecycle the owner sees is Pending → Submitted → Completed / Returned. Keeping the transaction
+status equal to the last `STATUS_CHANGED.to_status` keeps replay simple. Settlement is
+`settlement` becoming non-null while Increase's status stays `submitted`
+(https://increase.com/documentation/api/ach-transfers#the-ach-transfer-object), so FedACH
+submission is a step and not a state of ours.
+
+**Alternatives**
+Keep the transaction `PENDING` until it completes (the spec's two-state lifecycle) and put
+`SUBMITTED` on `payments` only; a `PROCESSING`-style outbox status.
+
+**Tradeoff**
+One more status in the activity filter and labels.
+
+## 2026-11-07 — Submission failures: a first-attempt refusal releases the hold; unknown gives up, PENDING
+
+**Decision**
+- Timeout, 5xx or 429, or our own failure after the call → retry with backoff (5 s doubling,
+  capped at 15 min), `last_submit_error` stored as a sanitized message.
+- Increase 4xx **on the first attempt**, other than 401/403/409 → `FAILED`, hold released
+  (`HOLD_RELEASED` then `STATUS_CHANGED → FAILED`), no ledger entry.
+- Anything whose outcome is unknown → the submitter **gives up**: a 4xx on a later attempt, any
+  401/403/409, a 409 `idempotency_key_already_used_error`, 10 failed attempts, or a claim seen more
+  than 10 times (crash loop). The payment stays `PENDING` with its hold, `submit_gave_up_at` is set,
+  which removes it from the claim query and its partial index, and the trace gets a `STATUS_CHANGED
+  PENDING → PENDING` row ("Couldn't confirm the payment was sent"; no new trace kind). The worker's
+  backlog log line reports `given_up_payments`.
+- Giving up isn't final: a later `ach_transfer.*` webhook finds the payment by our `payment-<id>`
+  key and applies the normal steps — a live transfer is accepted and then completes or returns, and
+  a rejected or canceled one moves it to `FAILED` and releases the hold.
+- A live transfer for a payment that is `FAILED` (Increase refused it, so the hold is released) is
+  a permanent event failure for Ops (`PaymentTransferMismatchError`) and changes nothing.
+
+**Why**
+After a timeout the outcome at Increase is unknown: it may have created the transfer and we lost
+the answer. Releasing the reservation could then let the owner spend money that has already left.
+Increase replays the original response for a repeated key, so a 4xx on the *first* attempt is a
+definite "not created". After an earlier timeout it isn't: that request may still have created it.
+401/403/409 are our credentials, permissions or a conflict, never proof either way. Leaving the
+payment `PENDING` rather than `FAILED` keeps one state machine: the provider's word, by webhook,
+still moves it, so there's no `FAILED → SUBMITTED` edge to invent.
+
+**Alternatives**
+Mark it `FAILED` with the hold kept (the first version; a late webhook then had nowhere to go);
+release on exhaustion, which overstates available if the money went out; reconcile through
+`GET /ach_transfers?idempotency_key=` before giving up.
+
+**Tradeoff**
+A given-up payment reserves its funds until a webhook arrives or Ops resolves it with Increase.
+Sandbox webhooks aren't retried, so without the Events API backstop that can be a while. The Ops
+tools for it don't exist yet; the signals are the log line, `submit_gave_up_at` and the trace row.
+
+## 2026-11-07 — ACH webhooks: re-fetch the transfer, apply only the steps we haven't
+
+**Decision**
+`ach_transfer.created` and `.updated` share one handler. `fetch` re-reads the transfer. `apply`
+finds the payment by `(provider, provider_object_id)`, or else by the payment id in the transfer's
+`idempotency_key` (`payment-<uuid>`, which Increase stores on the object). It then locks account →
+payment, checks amount and currency, and asks `planPaymentActions` (domain) which steps are new,
+given the status, whether `SUBMITTED_TO_NETWORK` is on the trace, and whether a `PAYMENT_RETURN`
+exists. Steps apply in order in the event's transaction:
+- accept a still-`PENDING` payment (including one the submitter gave up on);
+- network submission (trace only);
+- settlement → `COMPLETED` through `postLedgerEntry({ releaseHoldForTransactionId })`, so the trace
+  reads ledger −$100 with available unchanged;
+- return before settlement → `RETURNED`, hold released, nothing posted;
+- return after settlement → a new `PAYMENT_RETURN` (`COMPLETED`, `provider_object_id` = transfer
+  id, `related_transaction_id` = the payment, `ON CONFLICT DO NOTHING`) crediting the ledger, with
+  the original left `COMPLETED`;
+- `rejected` / `canceled` → `FAILED`, hold released.
+
+A transfer without our key is `PaymentNotOursError` (permanent, like funding's "not ours"). A key
+naming a missing payment retries. `provider_ref` is the transfer id, or the return's
+`transaction_id` for return steps.
+
+**Why**
+Thin webhooks mean an event can't say which step happened. Diffing the cumulative object against
+our own records under the account lock makes duplicates, older snapshots, created + updated racing
+and the "webhook before the submitter stored the id" case converge on one effect per step.
+
+**Alternatives**
+Store a "last applied Increase status" column; map each event to one step.
+
+**Tradeoff**
+A settlement seen after we recorded a return-before-settlement is a no-op (net money is zero
+either way). Sandbox webhooks aren't retried, so a missed one waits for the Events API backstop or
+reconciliation (both out of scope here).
+
+## 2026-11-07 — The recipient account number is stored for the outbox and shown as last four only
+
+**Decision**
+`payments.account_number` and `routing_number` are stored, because the submitter must send them.
+Reads select `right(account_number, 4)` (`accountNumberLast4`), so the full number never leaves the
+service layer except in the Increase request. Logs carry neither number, and the logger redacts `account_number`,
+`accountNumber`, `routing_number` and `routingNumber` as a backstop. `ProviderTransfer` drops
+Increase's echoed `account_number`.
+
+**Why**
+The outbox needs the full intent to retry. Masking in the query rather than the view means a new
+read path can't leak it by accident.
+
+**Alternatives**
+Increase External Accounts (`external_account_id`) as a token, which is part of recipient
+management and out of scope; application-level encryption with a KMS key.
+
+**Tradeoff**
+The number sits in plaintext in our database. In production it should be tokenized or encrypted,
+and could be cleared once the transfer is accepted.
+
+## 2026-11-07 — Our account links to its Increase account; simulations write nothing
+
+**Decision**
+`accounts.provider_id` is the Increase account that originates the account's ACH transfers.
+`npm run increase:bootstrap` sets it from the sandbox account it creates, or from the already-linked
+card's account. `POST /api/payments/:id/{submit,settle,return}` calls the Increase sandbox
+simulation for the payment's transfer and returns 202. It changes nothing in our books: 404
+another account's or a missing payment, 409 not yet submitted, 422 Increase refused the step, 502
+timeout. State moves only through the webhook and the worker.
+
+**Why**
+Same reasoning as the card simulations: one path changes state, the one real ACH events take.
+Per-account data, not an env var, because the link is per business account.
+
+**Alternatives**
+An `INCREASE_ACCOUNT_ID` env var; looking up the card's account on every submission.
+
+**Tradeoff**
+A database whose card was linked before this change needs `npm run increase:bootstrap` re-run once
+(it only links the account).
