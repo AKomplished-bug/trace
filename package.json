@@ -16,7 +16,8 @@
     "db:up": "docker compose up -d --wait",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
-    "db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts"
+    "db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts",
+    "worker": "tsx --env-file-if-exists=.env src/worker/index.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",
