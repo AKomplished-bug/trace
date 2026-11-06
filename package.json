@@ -13,10 +13,15 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint",
     "test": "vitest run",
-    "db:up": "docker compose up -d --wait"
+    "db:up": "docker compose up -d --wait",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
+    "db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts"
   },
   "dependencies": {
+    "drizzle-orm": "^0.45.4",
     "next": "16.4.5",
+    "pg": "^8.23.1",
     "pino": "^10.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -25,8 +30,10 @@
   "devDependencies": {
     "@tailwindcss/turbopack": "^4.3.5",
     "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "drizzle-kit": "^0.31.11",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.4.5",
     "tailwindcss": "^4.3.5",
