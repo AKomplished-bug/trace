@@ -18,7 +18,8 @@
     "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts",
     "db:seed:demo": "tsx --env-file-if-exists=.env scripts/seed-demo.ts",
-    "worker": "tsx --env-file-if-exists=.env src/worker/index.ts"
+    "worker": "tsx --env-file-if-exists=.env src/worker/index.ts",
+    "increase:bootstrap": "tsx --env-file-if-exists=.env scripts/increase-bootstrap.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",

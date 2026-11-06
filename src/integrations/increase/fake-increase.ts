@@ -79,6 +79,14 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
     if (method !== "POST") return notFound();
 
     switch (url.pathname) {
+      case "/accounts":
+        return respond(200, { id: `account_fake_${++counter}`, type: "account", name: body.name });
+      case "/account_numbers":
+        return respond(200, { id: `account_number_fake_${++counter}`, type: "account_number", account_id: body.account_id });
+      case "/simulations/inbound_ach_transfers":
+        return respond(200, { id: `inbound_ach_transfer_fake_${++counter}`, type: "inbound_ach_transfer", amount: body.amount, status: "accepted" });
+      case "/cards":
+        return respond(200, { id: `card_fake_${++counter}`, type: "card", account_id: body.account_id, last4: "4242", status: "active" });
       case "/simulations/card_authorizations": {
         const id = `card_payment_fake_${++counter}`;
         const payment: CardPaymentJson = { ...structuredClone(authorized), id, card_id: String(body.card_id), elements: [] };

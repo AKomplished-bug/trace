@@ -202,6 +202,14 @@ describe("Increase API calls (fake Increase behind the real SDK)", () => {
     expect(fake.requests).toHaveLength(2);
   });
 
+  it("bootstraps a funded sandbox account and card", async () => {
+    const fake = createFakeIncrease();
+    const result = await fake.adapter.bootstrapSandboxCard({ name: "Trace demo", fundingCents: 10_000_000 });
+    expect(result).toEqual({ accountId: expect.stringMatching(/^account_fake_/), cardId: expect.stringMatching(/^card_fake_/), last4: "4242" });
+    expect(fake.requests.map((r) => r.path)).toEqual(["/accounts", "/account_numbers", "/simulations/inbound_ach_transfers", "/cards"]);
+    expect(fake.requests[2].body).toMatchObject({ amount: 10_000_000 });
+  });
+
   it("returns a seeded fixture on retrieve", async () => {
     const fake = createFakeIncrease();
     seedCardPayment(fake, refunded as unknown as CardPaymentJson);

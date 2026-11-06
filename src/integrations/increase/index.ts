@@ -238,6 +238,23 @@ export class IncreaseAdapter implements CardProvider {
     return { cardPaymentId: input.cardPaymentId, declined: false, requestId };
   }
 
+  /**
+   * Sandbox setup for the demo (npm run increase:bootstrap): an account, an account number, an
+   * inbound ACH credit so the account can cover authorizations (Increase declines what its own
+   * balance can't cover; our ledger is separate), and a virtual card on it.
+   */
+  async bootstrapSandboxCard(input: { name: string; fundingCents: number }): Promise<{ accountId: string; cardId: string; last4: string }> {
+    const { data: account } = await this.call("create account", () => this.increase().accounts.create({ name: input.name }));
+    const { data: accountNumber } = await this.call("create account number", () =>
+      this.increase().accountNumbers.create({ account_id: account.id, name: input.name }),
+    );
+    await this.call("simulate inbound ACH transfer", () =>
+      this.increase().simulations.inboundACHTransfers.create({ account_number_id: accountNumber.id, amount: input.fundingCents }),
+    );
+    const { data: card } = await this.call("create card", () => this.increase().cards.create({ account_id: account.id, description: input.name }));
+    return { accountId: account.id, cardId: card.id, last4: card.last4 };
+  }
+
   private async fetchCardPayment(id: string): Promise<{ payment: Increase.CardPayment; requestId: string | null }> {
     const { data, requestId } = await this.call(`retrieve card payment ${id}`, () => this.increase().cardPayments.retrieve(id));
     return { payment: data, requestId };
