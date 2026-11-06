@@ -19,7 +19,7 @@ export function describeStep(step: TimelineStep, type: TransactionType): { title
   switch (step.kind) {
     case "HOLD_CREATED":
       return type === "OUTBOUND_PAYMENT"
-        ? { title: "Payment submitted — funds reserved", detail: "Reserved until the payment completes. Your ledger balance is unchanged." }
+        ? { title: "Payment requested — funds reserved", detail: "Reserved until the payment completes. Your ledger balance is unchanged." }
         : { title: "Card authorized — funds put on hold", detail: "The merchant reserved this amount. Nothing has moved yet, so only your available balance drops." };
     case "LEDGER_POSTED":
       return { title: POSTED[type], detail: "Money actually moved: your ledger balance changed by this amount." };
@@ -43,6 +43,8 @@ export function describeStep(step: TimelineStep, type: TransactionType): { title
         title: "Authorized above your available balance",
         detail: "The card network approved this purchase even though the hold took your available balance below zero.",
       };
+    case "SUBMITTED_TO_NETWORK":
+      return { title: "Sent to the ACH network", detail: "On its way to the recipient's bank. Nothing has left your ledger yet." };
     case "STATUS_CHANGED":
       return describeStatusChange(step, type);
   }
@@ -69,6 +71,18 @@ function describeStatusChange(step: TimelineStep, type: TransactionType): { titl
     }
     if (step.toStatus === "REVERSED") return { title: "Authorization voided", detail: "The merchant cancelled before settling, so no money moved." };
     if (step.toStatus === "EXPIRED") return { title: "Authorization expired", detail: "The merchant never settled in time, so no money moved." };
+  }
+  if (type === "OUTBOUND_PAYMENT") {
+    if (step.toStatus === "PENDING") return { title: "Payment requested", detail: "Saved and waiting to be sent to our bank partner. Nothing has moved yet." };
+    if (step.toStatus === "SUBMITTED") return { title: "Accepted by our bank partner", detail: "The transfer is with the bank. It completes once the recipient's bank has the money." };
+    if (step.toStatus === "COMPLETED") return { title: "Payment completed", detail: "The money reached the recipient's bank." };
+    if (step.toStatus === "RETURNED") return { title: "Payment returned", detail: "The recipient's bank sent it back before it settled, so no money left your account." };
+    if (step.toStatus === "FAILED") {
+      return { title: "Payment not sent", detail: "Our bank partner couldn't take this payment. If the amount is still reserved, we're confirming whether it went out." };
+    }
+  }
+  if (type === "PAYMENT_RETURN" && step.toStatus === "COMPLETED") {
+    return { title: "Returned payment received", detail: "The recipient's bank sent the money back after the payment had completed." };
   }
   if (type === "CARD_REVERSAL" && step.toStatus === "SETTLED") {
     return { title: "Refund received", detail: "The merchant sent money back for this purchase." };

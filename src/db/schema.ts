@@ -16,6 +16,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import { HOLD_KINDS, HOLD_STATUSES, LEDGER_ENTRY_TYPES, TRANSACTION_TYPES } from "../domain/ledger";
+import { PAYMENT_STATUSES } from "../domain/payments";
 
 // Amounts are integer cents in bigint columns, read as JS numbers (safe up to ±2^53).
 const cents = (name: string) => bigint(name, { mode: "number" });
@@ -34,6 +35,8 @@ export const transactionType = pgEnum("transaction_type", TRANSACTION_TYPES);
 export const transactionStatus = pgEnum("transaction_status", [
   "PENDING",
   "AUTHORIZED",
+  // An outbound payment the provider has accepted but not yet settled.
+  "SUBMITTED",
   "SETTLED",
   "COMPLETED",
   "REVERSED",
@@ -43,7 +46,7 @@ export const transactionStatus = pgEnum("transaction_status", [
 ]);
 export const holdKind = pgEnum("hold_kind", HOLD_KINDS);
 export const holdStatus = pgEnum("hold_status", HOLD_STATUSES);
-export const paymentStatus = pgEnum("payment_status", ["PENDING", "COMPLETED", "RETURNED", "FAILED"]);
+export const paymentStatus = pgEnum("payment_status", PAYMENT_STATUSES);
 export const ledgerEntryType = pgEnum("ledger_entry_type", LEDGER_ENTRY_TYPES);
 export const externalEventStatus = pgEnum("external_event_status", [
   "RECEIVED",
@@ -63,6 +66,8 @@ export const transactionEventKind = pgEnum("transaction_event_kind", [
   "SETTLED_AFTER_HOLD_CLOSED",
   // A card authorization the provider approved that took available balance below zero.
   "HOLD_EXCEEDS_AVAILABLE",
+  // The provider sent an outbound payment to the payment network (no money or status change).
+  "SUBMITTED_TO_NETWORK",
 ]);
 export const auditActorType = pgEnum("audit_actor_type", ["USER", "SYSTEM"]);
 
@@ -97,6 +102,8 @@ export const accounts = pgTable(
     status: accountStatus("status").notNull().default("ACTIVE"),
     // Cache of SUM(ledger_entries.amount_cents); written in the same transaction as the entries.
     ledgerBalanceCents: cents("ledger_balance_cents").notNull().default(0),
+    // The Increase account that originates this account's outbound payments (npm run increase:bootstrap).
+    providerId: text("provider_id").unique(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -193,18 +200,40 @@ export const payments = pgTable(
       .unique()
       .references(() => transactions.id),
     recipient: text("recipient").notNull(),
+    // The recipient's bank account. The full number is stored only because the submitter must send
+    // it to the provider; APIs, UI and logs show the last four digits.
+    accountNumber: text("account_number").notNull(),
+    routingNumber: text("routing_number").notNull(),
+    description: text("description"),
     amountCents: cents("amount_cents").notNull(),
     currency: currency(),
     status: paymentStatus("status").notNull().default("PENDING"),
     provider: text("provider"),
     providerObjectId: text("provider_object_id"),
+    // Outbox: a PENDING payment is the persisted intent; the worker's submitter claims it when
+    // next_submit_at is due (while claimed, next_submit_at is the lease expiry).
+    // Retry budget: claims so far.
+    submitAttempts: integer("submit_attempts").notNull().default(0),
+    // Fencing token: incremented on every claim; the submitter's later writes require it to match.
+    submitClaimToken: integer("submit_claim_token").notNull().default(0),
+    nextSubmitAt: timestamptz("next_submit_at").notNull().defaultNow(),
+    lastSubmitError: text("last_submit_error"),
+    // Set when the submitter stopped retrying with the outcome at the provider unknown; the payment
+    // stays PENDING with its hold until a webhook (or Ops) says what happened.
+    submitGaveUpAt: timestamptz("submit_gave_up_at"),
+    // When the provider accepted the transfer.
+    submittedAt: timestamptz("submitted_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     index("payments_account_created_idx").on(t.accountId, t.createdAt),
     uniqueIndex("payments_provider_object_key").on(t.provider, t.providerObjectId),
+    // Submitter claim and the oldest-unsubmitted gauge: only rows still waiting to be submitted.
+    index("payments_submit_due_idx").on(t.nextSubmitAt).where(sql`${t.status} = 'PENDING' AND ${t.submitGaveUpAt} IS NULL`),
     check("payments_amount_positive", sql`${t.amountCents} > 0`),
+    check("payments_account_number_digits", sql`${t.accountNumber} ~ '^[0-9]{4,17}$'`),
+    check("payments_routing_number_digits", sql`${t.routingNumber} ~ '^[0-9]{9}$'`),
     usdOnly("payments"),
   ],
 );

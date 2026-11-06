@@ -18,6 +18,7 @@ export const TYPE_LABELS: Record<TransactionType, string> = {
 export const STATUS_LABELS: Record<TransactionStatus, string> = {
   PENDING: "Pending",
   AUTHORIZED: "Authorized",
+  SUBMITTED: "Submitted",
   SETTLED: "Settled",
   COMPLETED: "Completed",
   REVERSED: "Reversed",

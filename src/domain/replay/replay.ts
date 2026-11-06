@@ -16,6 +16,7 @@ export const TRACE_KINDS = [
   "LEDGER_POSTED",
   "SETTLED_AFTER_HOLD_CLOSED",
   "HOLD_EXCEEDS_AVAILABLE",
+  "SUBMITTED_TO_NETWORK",
 ] as const;
 export type TraceKind = (typeof TRACE_KINDS)[number];
 
@@ -82,6 +83,7 @@ export type ExplanationKey =
   | "hold_expired"
   | "hold_already_closed"
   | "settled_after_hold_closed"
+  | "submitted_to_network"
   | "status_changed";
 
 export interface ReplayStep {
@@ -233,6 +235,8 @@ export function apply(state: ReplayState, event: AppliedEvent): { state: ReplayS
       return { state, explanation: "settled_after_hold_closed" };
     case "HOLD_EXCEEDS_AVAILABLE":
       return { state, explanation: "hold_exceeds_available" };
+    case "SUBMITTED_TO_NETWORK":
+      return { state, explanation: "submitted_to_network" };
   }
 }
 

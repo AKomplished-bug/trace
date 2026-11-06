@@ -4,6 +4,7 @@ import { STATUS_LABELS, type TransactionStatus } from "./labels";
 const TONES: Record<TransactionStatus, string> = {
   PENDING: "bg-amber-50 text-amber-800 ring-amber-200",
   AUTHORIZED: "bg-amber-50 text-amber-800 ring-amber-200",
+  SUBMITTED: "bg-amber-50 text-amber-800 ring-amber-200",
   SETTLED: "bg-emerald-50 text-emerald-800 ring-emerald-200",
   COMPLETED: "bg-emerald-50 text-emerald-800 ring-emerald-200",
   REVERSED: "bg-neutral-100 text-neutral-700 ring-neutral-300",

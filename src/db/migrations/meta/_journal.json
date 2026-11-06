@@ -15,6 +15,20 @@
       "when": 1793995262224,
       "tag": "0001_card_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793999667387,
+      "tag": "0002_payment_statuses",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794001331713,
+      "tag": "0003_payment_outbox",
+      "breakpoints": true
     }
   ]
 }
