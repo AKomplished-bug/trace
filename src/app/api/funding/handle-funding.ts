@@ -7,7 +7,7 @@ import { newId } from "../../../lib/ids";
 import type { Logger } from "../../../lib/logger";
 import { createFunding, FundingProviderError, IdempotencyConflictError, type Transaction } from "../../../services/funding";
 import { errorResponse } from "../responses";
-import { currentAccountId } from "../session";
+import { requireOwner } from "../session";
 
 export interface FundingDeps {
   db: Db;
@@ -43,8 +43,10 @@ function view(transaction: Transaction) {
  * transaction with `Idempotent-Replayed: true`; the same key with a different body is 409.
  */
 export async function handleFunding(deps: FundingDeps, request: Request): Promise<Response> {
+  const owner = await requireOwner(request);
+  if (owner instanceof Response) return owner;
   const correlationId = newId();
-  const log = deps.logger.child({ correlation_id: correlationId, route: "POST /api/funding" });
+  const log = deps.logger.child({ correlation_id: correlationId, route: "POST /api/funding", user_id: owner.userId });
 
   const key = idempotencyKeySchema.safeParse(request.headers.get("idempotency-key") ?? "");
   if (!key.success) {
@@ -64,11 +66,10 @@ export async function handleFunding(deps: FundingDeps, request: Request): Promis
   }
 
   try {
-    const accountId = await currentAccountId(request);
     const { transaction, replayed } = await createFunding(
       deps.db,
       deps.provider,
-      { accountId, amountCents: body.data.amountCents, idempotencyKey: key.data },
+      { accountId: owner.accountId, amountCents: body.data.amountCents, idempotencyKey: key.data },
       log,
     );
     return Response.json({ transaction: view(transaction) }, { status: 201, headers: replayed ? { "Idempotent-Replayed": "true" } : undefined });
