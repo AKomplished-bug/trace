@@ -1,0 +1,69 @@
+{
+  "id": "evt_3TfuNd2eZvKYlo2C0bXw4Hk1",
+  "object": "event",
+  "api_version": "2026-10-28.endive",
+  "created": 1793925601,
+  "data": {
+    "object": {
+      "id": "pi_3TfuNd2eZvKYlo2C0kq7f9Xa",
+      "object": "payment_intent",
+      "amount": 50000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 50000,
+      "application": null,
+      "application_fee_amount": null,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_3TfuNd2eZvKYlo2C0kq7f9Xa_secret_fixture",
+      "confirmation_method": "automatic",
+      "created": 1793925600,
+      "currency": "usd",
+      "customer": null,
+      "description": null,
+      "last_payment_error": null,
+      "latest_charge": "ch_3TfuNd2eZvKYlo2C0Q1b7mWd",
+      "livemode": false,
+      "metadata": {
+        "transaction_id": "fixture",
+        "account_id": "fixture"
+      },
+      "next_action": null,
+      "on_behalf_of": null,
+      "payment_method": "pm_1TfuNd2eZvKYlo2CvQ9yFq3s",
+      "payment_method_options": {
+        "card": {
+          "installments": null,
+          "mandate_options": null,
+          "network": null,
+          "request_three_d_secure": "automatic"
+        }
+      },
+      "payment_method_types": [
+        "card"
+      ],
+      "processing": null,
+      "receipt_email": null,
+      "review": null,
+      "setup_future_usage": null,
+      "shipping": null,
+      "source": null,
+      "statement_descriptor": null,
+      "statement_descriptor_suffix": null,
+      "status": "succeeded",
+      "transfer_data": null,
+      "transfer_group": null
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": {
+    "id": "req_fixtureXw4Hk1",
+    "idempotency_key": "funding-fixture"
+  },
+  "type": "payment_intent.succeeded"
+}
