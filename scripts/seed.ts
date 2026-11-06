@@ -1,10 +1,10 @@
 import { createDb, createPool } from "../src/db/client";
 import { seed, SEED } from "../src/db/seed";
-import { config } from "../src/lib/config";
+import { databaseConfig } from "../src/lib/config";
 import { safeErrorForLog } from "../src/lib/errors";
 import { logger } from "../src/lib/logger";
 
-const pool = createPool(config().DATABASE_URL, 1);
+const pool = createPool(databaseConfig().DATABASE_URL, 1);
 try {
   await seed(createDb(pool));
   logger.info({ business_id: SEED.businessId, account_id: SEED.accountId }, "seed applied");
