@@ -38,6 +38,11 @@ export function describeStep(step: TimelineStep, type: TransactionType): { title
         title: "Settled after the hold had already closed",
         detail: "The merchant captured late. The settlement still posted; the hold had already stopped reserving funds.",
       };
+    case "HOLD_EXCEEDS_AVAILABLE":
+      return {
+        title: "Authorized above your available balance",
+        detail: "The card network approved this purchase even though the hold took your available balance below zero.",
+      };
     case "STATUS_CHANGED":
       return describeStatusChange(step, type);
   }
@@ -46,7 +51,8 @@ export function describeStep(step: TimelineStep, type: TransactionType): { title
 /** The amount a step shows: the signed ledger change for postings, the held amount for holds. */
 export function stepAmount(step: TimelineStep): { cents: number; signed: boolean; note?: string } | null {
   if (step.kind === "LEDGER_POSTED") return { cents: step.ledgerDeltaCents, signed: true };
-  if (step.amountCents === null) return null;
+  // A flag on the authorization above it, not a second hold: no amount of its own.
+  if (step.amountCents === null || step.kind === "HOLD_EXCEEDS_AVAILABLE") return null;
   const note = step.kind === "HOLD_CREATED" ? "held" : step.kind === "SETTLED_AFTER_HOLD_CLOSED" ? "was held" : "released";
   return { cents: step.amountCents, signed: false, note };
 }

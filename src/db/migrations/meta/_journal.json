@@ -8,6 +8,13 @@
       "when": 1793992418791,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1793995262224,
+      "tag": "0001_card_lifecycle",
+      "breakpoints": true
     }
   ]
 }

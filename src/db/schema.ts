@@ -61,6 +61,8 @@ export const transactionEventKind = pgEnum("transaction_event_kind", [
   "LEDGER_POSTED",
   // A settlement posted after its hold had already expired or been released (late capture).
   "SETTLED_AFTER_HOLD_CLOSED",
+  // A card authorization the provider approved that took available balance below zero.
+  "HOLD_EXCEEDS_AVAILABLE",
 ]);
 export const auditActorType = pgEnum("audit_actor_type", ["USER", "SYSTEM"]);
 
@@ -133,6 +135,8 @@ export const transactions = pgTable(
     providerObjectId: text("provider_object_id"),
     // Reversals and returns are new transactions pointing at the original.
     relatedTransactionId: uuid("related_transaction_id").references((): AnyPgColumn => transactions.id),
+    // Who the money moved with, for display (e.g. a card purchase's merchant descriptor).
+    counterparty: text("counterparty"),
     // Command idempotency (POST /funding, POST /payments) lives here only: the key is scoped to
     // the account and request_hash detects the same key reused with a different body.
     idempotencyKey: text("idempotency_key"),
