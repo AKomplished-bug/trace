@@ -1,0 +1,34 @@
+{
+  "id": "evt_3TfuNd2eZvKYlo2C0zP3sDq7",
+  "object": "event",
+  "api_version": "2026-10-28.endive",
+  "created": 1793925601,
+  "data": {
+    "object": {
+      "id": "ch_3TfuNd2eZvKYlo2C0Q1b7mWd",
+      "object": "charge",
+      "amount": 50000,
+      "amount_captured": 50000,
+      "amount_refunded": 0,
+      "balance_transaction": "txn_3TfuNd2eZvKYlo2C0e8sKp4t",
+      "captured": true,
+      "currency": "usd",
+      "livemode": false,
+      "paid": true,
+      "payment_intent": "pi_3TfuNd2eZvKYlo2C0kq7f9Xa",
+      "refunded": false,
+      "status": "succeeded",
+      "metadata": {
+        "transaction_id": "fixture",
+        "account_id": "fixture"
+      }
+    }
+  },
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": {
+    "id": "req_fixtureP3sDq7",
+    "idempotency_key": "funding-fixture"
+  },
+  "type": "charge.succeeded"
+}
