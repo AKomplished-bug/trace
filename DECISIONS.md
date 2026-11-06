@@ -180,3 +180,95 @@ kind.
 **Tradeoff**
 Available can briefly have been higher than the eventual debit allows (between expiry and late
 capture); the trace makes that visible instead of hiding it.
+
+## 2026-11-07 — Funding calls Stripe from the API request, after commit
+
+**Decision**
+`POST /api/funding` commits the `PENDING` FUNDING transaction and its first trace row, then
+creates and confirms the PaymentIntent in the same request (10 s timeout, SDK retries off) and
+stores its id as `provider_object_id`. Stripe gets the idempotency key `funding-<transaction id>`,
+not the client's key.
+
+**Why**
+The owner gets the PaymentIntent id (or a clear error) in the response, and no network call runs
+inside the DB transaction. The pending transaction is the persisted intent: a client retry with
+the same `Idempotency-Key` finds it and repeats the Stripe call with the same Stripe key, so a
+timeout that did create a PaymentIntent returns that one rather than charging twice. Our key is
+per transaction because client keys are only unique per account, while Stripe's are per Stripe
+account.
+
+**Alternatives**
+A worker outbox submitter, as CLAUDE.md prescribes for outbound calls: the API only writes the
+intent and the worker calls Stripe with backoff.
+
+**Tradeoff**
+Retries are client-driven: if the client never retries, a funding whose Stripe call failed stays
+`PENDING` with no PaymentIntent. Those rows are visible (`provider_object_id IS NULL`); the next
+step is a worker submitter or reconciliation sweep that retries or expires them. Until then this
+is a known exception to the outbox rule.
+
+## 2026-11-07 — A failed Stripe call leaves funding PENDING, not FAILED
+
+**Decision**
+A timeout or Stripe error keeps the transaction `PENDING`; the error is logged with the Stripe
+request id and the client gets `502 provider_unavailable` telling it to retry with the same key.
+A card decline is not an error: the declined PaymentIntent's id is stored and its
+`payment_intent.payment_failed` webhook moves the transaction to `FAILED`.
+
+**Why**
+After a timeout the outcome at Stripe is unknown; marking `FAILED` could contradict a payment
+that succeeded. Only Stripe's final word, via the webhook, changes the status, so there is one
+writer of funding status transitions.
+
+**Alternatives**
+`FAILED` on any error (simple, but wrong when the charge went through); an error column on
+`transactions`.
+
+**Tradeoff**
+The API never shows `FAILED` directly, even for a decline it saw; the client sees it once the
+webhook is processed.
+
+## 2026-11-07 — Funding outcomes trust the fetched PaymentIntent; a mismatch goes to Ops
+
+**Decision**
+`payment_intent.succeeded` / `payment_intent.payment_failed` map to internal `FUNDING_CONFIRMED` /
+`FUNDING_FAILED`. The handler's `fetch` re-retrieves the PaymentIntent and `apply` acts on that
+object: confirmation needs status `succeeded`, currency USD and `amount_received` equal to our
+`amount_cents`, then moves `PENDING → SETTLED` (`SETTLED`, like card settlement: the money has
+landed) and posts `FUNDING_CREDIT` with `provider_ref` = the charge id. If `amount_received`
+differs, nothing is posted: the handler throws, the event retries and ends `FAILED` with the two
+amounts in `last_error`. A `payment_failed` whose PaymentIntent has since succeeded is a no-op.
+
+**Why**
+We create and confirm the PaymentIntent in one call, so a different amount means something
+outside our flow changed it; crediting an amount we can't explain is worse than a delayed credit
+that Ops resolves with an `ADJUSTMENT`. Re-fetching means a stale or replayed payload can't move
+money.
+
+**Alternatives**
+Post the provider amount and flag the transaction (the card-settlement approach, where differing
+amounts are normal).
+
+**Tradeoff**
+A mismatch spends its ~36 minutes of retries before reaching Ops, because the worker has no
+"permanent error, fail now" path yet.
+
+## 2026-11-07 — A PaymentIntent with no FUNDING transaction retries, then fails to Ops
+
+**Decision**
+If no FUNDING transaction has the PaymentIntent id, the handler throws `FundingNotFoundError`;
+the event retries with backoff and ends `FAILED`.
+
+**Why**
+The common case is a race: Stripe can deliver `payment_intent.succeeded` before the API request
+has stored the id, and the retry 5 s later finds it. A PaymentIntent created outside our API
+(e.g. in the Stripe dashboard) has no account to credit, so it should surface rather than be
+dropped or guessed at.
+
+**Alternatives**
+Match on `metadata.transaction_id` from the fetched PaymentIntent; mark it `IGNORED`.
+
+**Tradeoff**
+A funding whose Stripe call timed out but succeeded, and is never retried by the client, ends as
+a `FAILED` event until Ops retries it after the id is stored.
+
