@@ -1,0 +1,210 @@
+import { createHmac } from "node:crypto";
+import Increase from "increase";
+import { Webhook } from "standardwebhooks";
+import { describe, expect, it } from "vitest";
+import { PaymentProviderError, ProviderRejectedError, WebhookVerificationError } from "../payment-provider";
+import { createFakeIncrease, INCREASE_WEBHOOK_SECRET, seedCardPayment, signedIncreaseWebhook, type CardPaymentJson } from "./fake-increase";
+import authorized from "./fixtures/card_payment.authorized.json";
+import expired from "./fixtures/card_payment.expired.json";
+import refunded from "./fixtures/card_payment.refunded.json";
+import reversed from "./fixtures/card_payment.reversed.json";
+import standaloneRefund from "./fixtures/card_payment.standalone_refund.json";
+import createdEvent from "./fixtures/event.card_payment.created.json";
+import pendingCreated from "./fixtures/event.pending_transaction.created.json";
+import { cardPaymentIdFromEvent, IncreaseAdapter, toCardPaymentElement, toProviderCardPayment, WEBHOOK_TOLERANCE_SECONDS } from ".";
+
+// No fetch override: any API call would go to the real sandbox, so this one is only used for signatures.
+const adapter = new IncreaseAdapter({ apiKey: "increase_unused", webhookSecret: INCREASE_WEBHOOK_SECRET });
+const asPayment = (fixture: unknown) => fixture as Increase.CardPayment;
+
+describe("verifyWebhook (Standard Webhooks)", () => {
+  it("accepts a correctly signed event and returns its id, category and payload", () => {
+    const { body, headers } = signedIncreaseWebhook(createdEvent);
+    expect(adapter.verifyWebhook(body, headers)).toEqual({
+      externalEventId: createdEvent.id,
+      eventType: "card_payment.created",
+      payload: createdEvent,
+    });
+  });
+
+  it("accepts a webhook signed by the Standard Webhooks reference library with Increase's key scheme", () => {
+    // The SDK's events.unwrap keys Standard Webhooks with base64(secret); sign the same way here.
+    const reference = new Webhook(`whsec_${Buffer.from(INCREASE_WEBHOOK_SECRET).toString("base64")}`);
+    const body = JSON.stringify(createdEvent);
+    const now = new Date();
+    const headers = new Headers({
+      "webhook-id": createdEvent.id,
+      "webhook-timestamp": String(Math.floor(now.getTime() / 1000)),
+      "webhook-signature": reference.sign(createdEvent.id, now, body),
+    });
+    expect(adapter.verifyWebhook(body, headers).externalEventId).toBe(createdEvent.id);
+  });
+
+  it("signs test webhooks the way the Increase SDK verifies them", () => {
+    const sdk = new Increase({ apiKey: "increase_unused", webhookSecret: INCREASE_WEBHOOK_SECRET });
+    const { body, headers } = signedIncreaseWebhook(createdEvent);
+    expect(sdk.events.unwrap(body, { headers: Object.fromEntries(headers) })).toEqual(createdEvent);
+    const forged = signedIncreaseWebhook(createdEvent, { secret: "attacker" });
+    expect(() => sdk.events.unwrap(forged.body, { headers: Object.fromEntries(forged.headers) })).toThrow();
+  });
+
+  it("accepts any one valid signature among several (secret rotation)", () => {
+    const { body, headers } = signedIncreaseWebhook(createdEvent);
+    headers.set("webhook-signature", `v1,${Buffer.from("old-secret-signature").toString("base64")} ${headers.get("webhook-signature")}`);
+    expect(adapter.verifyWebhook(body, headers).externalEventId).toBe(createdEvent.id);
+  });
+
+  it("rejects a tampered body, a wrong secret, a stale or future timestamp, and missing or malformed headers", () => {
+    const now = Math.floor(Date.now() / 1000);
+    const valid = signedIncreaseWebhook(createdEvent);
+    const cases: Array<[string, Headers]> = [
+      [valid.body.replace("card_payment.created", "card_payment.updated"), valid.headers],
+      [valid.body, signedIncreaseWebhook(createdEvent, { secret: "attacker" }).headers],
+      [valid.body, signedIncreaseWebhook(createdEvent, { timestamp: now - WEBHOOK_TOLERANCE_SECONDS - 5 }).headers],
+      [valid.body, signedIncreaseWebhook(createdEvent, { timestamp: now + WEBHOOK_TOLERANCE_SECONDS + 5 }).headers],
+    ];
+    for (const header of ["webhook-id", "webhook-timestamp", "webhook-signature"]) {
+      const headers = new Headers(valid.headers);
+      headers.delete(header);
+      cases.push([valid.body, headers]);
+    }
+    const garbage = new Headers(valid.headers);
+    garbage.set("webhook-signature", "garbage");
+    const v2 = new Headers(valid.headers);
+    v2.set("webhook-signature", valid.headers.get("webhook-signature")!.replace("v1,", "v2,"));
+    cases.push([valid.body, garbage], [valid.body, v2]);
+    for (const [body, headers] of cases) {
+      expect(() => adapter.verifyWebhook(body, headers)).toThrow(WebhookVerificationError);
+    }
+  });
+
+  it("rejects a correctly signed body that isn't an Increase event", () => {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const body = "not json";
+    const signature = createHmac("sha256", INCREASE_WEBHOOK_SECRET).update(`event_x.${timestamp}.${body}`).digest("base64");
+    const headers = new Headers({ "webhook-id": "event_x", "webhook-timestamp": String(timestamp), "webhook-signature": `v1,${signature}` });
+    expect(() => adapter.verifyWebhook(body, headers)).toThrow(WebhookVerificationError);
+  });
+});
+
+describe("mapping fixtures", () => {
+  it("maps an authorization and settlement for a different amount", () => {
+    expect(toProviderCardPayment(asPayment(refunded), "req_1")).toEqual({
+      id: "card_payment_nd3k2kacrqjli8482ave",
+      cardId: "card_oubs0hwk5rn6knuecxg2",
+      requestId: "req_1",
+      elements: [
+        { kind: "AUTHORIZATION", id: "card_authorization_6iqxap6ivd0fo5eu3i8x", amountCents: 8000, merchant: "FIGMA.COM", expiresAt: new Date("2026-11-14T10:00:00Z") },
+        { kind: "SETTLEMENT", id: "card_settlement_khv5kfeu0vndj291omg6", amountCents: 6500 },
+        { kind: "REFUND", id: "card_refund_imgc2xwplh6t4r3gn16e", amountCents: 6500, merchant: "FIGMA.COM" },
+      ],
+    });
+  });
+
+  it("maps reversals, expirations and a refund on its own card payment", () => {
+    expect(toProviderCardPayment(asPayment(reversed), null).elements[1]).toEqual({
+      kind: "REVERSAL",
+      id: "card_reversal_8vr9qy60cgf5d0slpb68",
+      amountCents: 8000,
+      remainingAuthorizationCents: 0,
+    });
+    expect(toProviderCardPayment(asPayment(expired), null).elements[1]).toEqual({
+      kind: "EXPIRATION",
+      id: "card_authorization_expiration_9xt0lw2z3dmwqgwsqmvq",
+      amountCents: 8000,
+    });
+    expect(toProviderCardPayment(asPayment(standaloneRefund), null).elements).toEqual([
+      { kind: "REFUND", id: "card_refund_q8w2mzt0x3n4b5v6c7d8", amountCents: 6500, merchant: "FIGMA.COM" },
+    ]);
+  });
+
+  it("marks declines as no effect and steps we don't model as unsupported", () => {
+    const auth = structuredClone(authorized.elements[0]);
+    expect(toCardPaymentElement({ category: "card_decline", created_at: "2026-11-07T10:00:00Z", card_decline: { id: "card_decline_1" } } as unknown as Increase.CardPayment.Element)).toEqual({
+      kind: "NO_EFFECT",
+      id: "card_decline_1",
+      category: "card_decline",
+    });
+    expect(toCardPaymentElement({ category: "card_increment", created_at: "2026-11-07T10:00:00Z", card_increment: { id: "card_increment_1" } } as unknown as Increase.CardPayment.Element)).toMatchObject({
+      kind: "UNSUPPORTED",
+      id: "card_increment_1",
+    });
+    auth.card_authorization.direction = "refund";
+    expect(toCardPaymentElement(auth as unknown as Increase.CardPayment.Element)).toMatchObject({ kind: "UNSUPPORTED", reason: "refund authorizations are not modelled" });
+  });
+
+  it("reads the card payment id from card_payment events only", () => {
+    expect(cardPaymentIdFromEvent(createdEvent)).toBe("card_payment_nd3k2kacrqjli8482ave");
+    expect(() => cardPaymentIdFromEvent(pendingCreated)).toThrow();
+  });
+});
+
+describe("Increase API calls (fake Increase behind the real SDK)", () => {
+  it("simulates authorize → settle → refund with the ids Increase needs, and re-fetches the result", async () => {
+    const fake = createFakeIncrease();
+    const auth = await fake.adapter.simulateAuthorization({ cardId: "card_1", amountCents: 8000, merchant: "FIGMA.COM" });
+    expect(auth).toMatchObject({ declined: false, requestId: expect.stringMatching(/^req_fake_/) });
+    expect(fake.requests[0]).toEqual({ method: "POST", path: "/simulations/card_authorizations", body: { card_id: "card_1", amount: 8000, merchant_descriptor: "FIGMA.COM" } });
+
+    await fake.adapter.simulateSettlement({ cardPaymentId: auth.cardPaymentId, amountCents: 6500 });
+    const pendingId = fake.cardPayments.get(auth.cardPaymentId)!.elements[0].card_authorization as { pending_transaction_id: string };
+    expect(fake.requests.slice(1).map((r) => [r.method, r.path, r.body])).toEqual([
+      ["GET", `/card_payments/${auth.cardPaymentId}`, {}],
+      ["POST", "/simulations/card_settlements", { card_id: "card_1", pending_transaction_id: pendingId.pending_transaction_id, amount: 6500 }],
+    ]);
+
+    await fake.adapter.simulateReversal({ cardPaymentId: auth.cardPaymentId, amountCents: 2000 });
+    expect(fake.requests.at(-1)).toMatchObject({ path: "/simulations/card_refunds", body: { transaction_id: expect.stringMatching(/^transaction_fake_/), amount: 2000 } });
+
+    const payment = await fake.adapter.retrieveCardPayment(auth.cardPaymentId);
+    expect(payment.elements.map((e) => [e.kind, "amountCents" in e ? e.amountCents : null])).toEqual([
+      ["AUTHORIZATION", 8000],
+      ["SETTLEMENT", 6500],
+      ["REFUND", 2000],
+    ]);
+  });
+
+  it("voids an unsettled authorization with a card reversal, and expires by card payment id", async () => {
+    const fake = createFakeIncrease();
+    const { cardPaymentId } = await fake.adapter.simulateAuthorization({ cardId: "card_1", amountCents: 8000 });
+    await fake.adapter.simulateReversal({ cardPaymentId });
+    expect(fake.requests.at(-1)).toEqual({ method: "POST", path: "/simulations/card_reversals", body: { card_payment_id: cardPaymentId } });
+    await fake.adapter.simulateExpiration({ cardPaymentId });
+    expect(fake.requests.at(-1)).toEqual({ method: "POST", path: "/simulations/card_authorization_expirations", body: { card_payment_id: cardPaymentId } });
+  });
+
+  it("reports a declined authorization instead of throwing", async () => {
+    const fake = createFakeIncrease();
+    fake.next = "decline";
+    const result = await fake.adapter.simulateAuthorization({ cardId: "card_1", amountCents: 8000 });
+    expect(result).toMatchObject({ declined: true, cardPaymentId: expect.stringMatching(/^card_payment_fake_/) });
+  });
+
+  it("times out once, without SDK retries, as a PaymentProviderError", async () => {
+    const fake = createFakeIncrease({ timeoutMs: 50 });
+    fake.next = "hang";
+    const call = fake.adapter.simulateAuthorization({ cardId: "card_1", amountCents: 100 });
+    await expect(call).rejects.toThrow(PaymentProviderError);
+    await expect(call).rejects.not.toThrow(ProviderRejectedError);
+    expect(fake.requests).toHaveLength(1);
+  });
+
+  it("reports Increase refusing a request as ProviderRejectedError with its error type only", async () => {
+    const fake = createFakeIncrease();
+    fake.next = "reject";
+    const refused = fake.adapter.simulateExpiration({ cardPaymentId: "card_payment_x" });
+    await expect(refused).rejects.toThrow(ProviderRejectedError);
+    await expect(refused).rejects.toMatchObject({
+      message: "Increase simulate card authorization expiration failed: invalid_operation_error",
+      requestId: expect.stringMatching(/^req_fake_/),
+    });
+    await expect(fake.adapter.retrieveCardPayment("card_payment_missing")).rejects.toThrow("object_not_found_error");
+    expect(fake.requests).toHaveLength(2);
+  });
+
+  it("returns a seeded fixture on retrieve", async () => {
+    const fake = createFakeIncrease();
+    seedCardPayment(fake, refunded as unknown as CardPaymentJson);
+    expect((await fake.adapter.retrieveCardPayment(refunded.id)).elements).toHaveLength(3);
+  });
+});

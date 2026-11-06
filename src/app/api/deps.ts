@@ -1,4 +1,5 @@
 import { createDb, createPool, type Db } from "../../db/client";
+import { INCREASE_PROVIDER, IncreaseAdapter } from "../../integrations/increase";
 import type { WebhookVerifier } from "../../integrations/payment-provider";
 import { STRIPE_PROVIDER, StripeAdapter } from "../../integrations/stripe";
 import { config } from "../../lib/config";
@@ -8,6 +9,7 @@ import { logger } from "../../lib/logger";
 export interface ApiDeps {
   db: Db;
   stripe: StripeAdapter;
+  increase: IncreaseAdapter;
   /** Webhook verifiers by the `[provider]` path segment. */
   webhookVerifiers: Readonly<Record<string, WebhookVerifier>>;
 }
@@ -24,10 +26,16 @@ export function apiDeps(): ApiDeps {
   if (!cache.traceApiDeps) {
     const env = config();
     const stripe = new StripeAdapter({ secretKey: env.STRIPE_SECRET_KEY, webhookSecret: env.STRIPE_WEBHOOK_SECRET });
+    const increase = new IncreaseAdapter({ apiKey: env.INCREASE_API_KEY, webhookSecret: env.INCREASE_WEBHOOK_SECRET });
     const pool = createPool(env.DATABASE_URL);
     // An idle client losing its connection must not crash the web process.
     pool.on("error", (error) => logger.error({ err: safeErrorForLog(error) }, "idle database client error"));
-    cache.traceApiDeps = { db: createDb(pool), stripe, webhookVerifiers: { [STRIPE_PROVIDER]: stripe } };
+    cache.traceApiDeps = {
+      db: createDb(pool),
+      stripe,
+      increase,
+      webhookVerifiers: { [STRIPE_PROVIDER]: stripe, [INCREASE_PROVIDER]: increase },
+    };
   }
   return cache.traceApiDeps;
 }

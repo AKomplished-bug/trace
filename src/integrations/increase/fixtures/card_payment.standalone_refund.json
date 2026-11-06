@@ -1,0 +1,51 @@
+{
+  "id": "card_payment_r3fundst4nd4l0n3xyz1",
+  "type": "card_payment",
+  "account_id": "account_in71c4amph0vgo2qllky",
+  "card_id": "card_oubs0hwk5rn6knuecxg2",
+  "created_at": "2026-11-07T10:00:00Z",
+  "digital_wallet_token_id": null,
+  "elements": [
+    {
+      "category": "card_refund",
+      "created_at": "2026-11-09T15:00:00Z",
+      "card_refund": {
+        "id": "card_refund_q8w2mzt0x3n4b5v6c7d8",
+        "type": "card_refund",
+        "amount": 6500,
+        "card_payment_id": "card_payment_r3fundst4nd4l0n3xyz1",
+        "cashback": null,
+        "currency": "USD",
+        "interchange": null,
+        "merchant_acceptor_id": "5665270011000168",
+        "merchant_category_code": "5734",
+        "merchant_city": "New York",
+        "merchant_country": "US",
+        "merchant_postal_code": "10045",
+        "merchant_state": "NY",
+        "merchant_name": "FIGMA.COM",
+        "network": "visa",
+        "network_identifiers": {
+          "acquirer_business_id": "69650702",
+          "acquirer_reference_number": "83163715445437604865090",
+          "transaction_id": "380308145627413"
+        },
+        "presentment_amount": 6500,
+        "presentment_currency": "USD",
+        "purchase_details": null,
+        "scheme_fees": [],
+        "transaction_id": "transaction_fk2r8bha0qx4bx0h1xyz"
+      }
+    }
+  ],
+  "physical_card_id": null,
+  "state": {
+    "authorized_amount": 0,
+    "fuel_confirmed_amount": 0,
+    "incremented_amount": 0,
+    "refund_authorized_amount": 0,
+    "refunded_amount": 6500,
+    "reversed_amount": 0,
+    "settled_amount": 0
+  }
+}

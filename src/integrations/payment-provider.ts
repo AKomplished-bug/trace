@@ -63,6 +63,14 @@ export class PaymentProviderError extends Error {
   }
 }
 
+/** The provider answered and refused the request (e.g. an invalid operation); retrying the same request won't help. */
+export class ProviderRejectedError extends PaymentProviderError {
+  constructor(message: string, requestId: string | null) {
+    super(message, requestId);
+    this.name = "ProviderRejectedError";
+  }
+}
+
 export interface PaymentProvider extends WebhookVerifier {
   /** Our provider name, as stored in `transactions.provider` and `external_events.provider`. */
   readonly name: string;
