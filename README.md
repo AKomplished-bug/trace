@@ -18,6 +18,7 @@ cp .env.example .env    # then set the two Stripe test keys (see below); the res
 npm run db:up           # Postgres 16 on localhost:5433 with databases trace and trace_test
 npm run db:migrate      # apply src/db/migrations to DATABASE_URL
 npm run db:seed         # Acme Inc., an owner and an ops user, a $0 USD account, one virtual card
+npm run db:seed:demo    # optional, dev only: the $500 fund → $80 authorization → $65 settlement story
 ```
 
 ## Run

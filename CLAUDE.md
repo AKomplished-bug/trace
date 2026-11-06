@@ -198,6 +198,7 @@ npm ci && cp .env.example .env   # first time
 npm run db:up        # Postgres 16 in docker on localhost:5433 (databases trace, trace_test)
 npm run db:migrate   # apply src/db/migrations to DATABASE_URL
 npm run db:seed      # idempotent demo data (Acme Inc., owner + ops users, $0 account, card)
+npm run db:seed:demo # optional, dev only: base seed + the $500 → $80 auth → $65 settle story
 npm run db:generate  # write a new SQL migration from src/db/schema.ts (review and commit it)
 npm run dev          # Next.js web + API
 npm run worker       # event worker (src/worker/index.ts)
