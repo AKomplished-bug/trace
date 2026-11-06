@@ -125,6 +125,9 @@ The element behind each lifecycle step (settlement, reversal, return id) goes in
   transaction open, 10 s timeout) and `apply` (effects, in the transaction that locks the event
   row and marks it PROCESSED). `apply` must treat `fetched` as possibly stale: lock the account,
   re-read the entity, and transition only from the expected status.
+- `apply` never catches a service error and carries on: a JS throw after DB writes doesn't abort
+  the transaction by itself, so swallowing it would commit half an effect. Let it propagate; the
+  worker rolls the transaction back and retries.
 - Event types with no handler are retried and end `FAILED` (they surface to Ops). Only types in
   the provider's explicit ignore list become `IGNORED`.
 - **No network call inside a DB transaction or while holding a row lock.** Outbound provider
