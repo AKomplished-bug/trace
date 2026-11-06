@@ -14,6 +14,7 @@ export default async function OwnerLayout({ children }: { children: ReactNode })
           <>
             <NavLink href="/">Overview</NavLink>
             <NavLink href="/activity">Activity</NavLink>
+            <NavLink href="/payments">Payments</NavLink>
           </>
         }
       />
