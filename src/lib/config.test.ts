@@ -6,14 +6,22 @@ const valid = {
   SESSION_SECRET: "x".repeat(32),
   STRIPE_SECRET_KEY: "sk_test_config",
   STRIPE_WEBHOOK_SECRET: "whsec_config",
+  INCREASE_API_KEY: "increase_config",
+  INCREASE_WEBHOOK_SECRET: "increase_config_secret",
 };
 
 describe("parseConfig", () => {
-  it("accepts a minimal environment and treats empty optional provider keys as unset", () => {
-    const config = parseConfig({ ...valid, INCREASE_API_KEY: "" });
+  it("accepts a minimal environment", () => {
+    const config = parseConfig(valid);
     expect(config.DATABASE_URL).toBe(valid.DATABASE_URL);
     expect(config.STRIPE_SECRET_KEY).toBe("sk_test_config");
-    expect(config.INCREASE_API_KEY).toBeUndefined();
+    expect(config.INCREASE_API_KEY).toBe("increase_config");
+  });
+
+  it("requires the Increase keys, counting empty as missing", () => {
+    expect(() => parseConfig({ ...valid, INCREASE_API_KEY: "", INCREASE_WEBHOOK_SECRET: undefined })).toThrow(
+      "Invalid environment: INCREASE_API_KEY is required; INCREASE_WEBHOOK_SECRET is required",
+    );
   });
 
   it("requires the Stripe keys, counting empty as missing", () => {

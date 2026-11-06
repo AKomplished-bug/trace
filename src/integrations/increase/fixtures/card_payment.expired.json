@@ -1,0 +1,103 @@
+{
+  "id": "card_payment_nd3k2kacrqjli8482ave",
+  "type": "card_payment",
+  "account_id": "account_in71c4amph0vgo2qllky",
+  "card_id": "card_oubs0hwk5rn6knuecxg2",
+  "created_at": "2026-11-07T10:00:00Z",
+  "digital_wallet_token_id": null,
+  "elements": [
+    {
+      "category": "card_authorization",
+      "created_at": "2026-11-07T10:00:00Z",
+      "card_authorization": {
+        "id": "card_authorization_6iqxap6ivd0fo5eu3i8x",
+        "type": "card_authorization",
+        "actioner": "increase",
+        "additional_amounts": {
+          "clinic": null,
+          "dental": null,
+          "original": null,
+          "prescription": null,
+          "surcharge": null,
+          "total_cumulative": null,
+          "total_healthcare": null,
+          "transit": null,
+          "unknown": null,
+          "vision": null
+        },
+        "amount": 8000,
+        "card_payment_id": "card_payment_nd3k2kacrqjli8482ave",
+        "currency": "USD",
+        "digital_wallet_token_id": null,
+        "direction": "settlement",
+        "expires_at": "2026-11-14T10:00:00Z",
+        "healthcare": null,
+        "merchant_acceptor_id": "5665270011000168",
+        "merchant_category_code": "5734",
+        "merchant_city": "New York",
+        "merchant_country": "US",
+        "merchant_postal_code": "10045",
+        "merchant_state": "NY",
+        "merchant_descriptor": "FIGMA.COM",
+        "network_details": {
+          "category": "visa",
+          "pulse": null,
+          "visa": {
+            "electronic_commerce_indicator": "secure_electronic_commerce",
+            "point_of_service_entry_mode": "manual",
+            "stand_in_processing_reason": null
+          }
+        },
+        "network_identifiers": {
+          "retrieval_reference_number": "130010054321",
+          "trace_number": "054321",
+          "transaction_id": "380308145627412"
+        },
+        "network_risk_score": 10,
+        "original_card_payment_id": null,
+        "pending_transaction_id": "pending_transaction_k1sfetcau2qbvjbzgju4",
+        "physical_card_id": null,
+        "presentment_amount": 8000,
+        "presentment_currency": "USD",
+        "processing_category": "purchase",
+        "real_time_decision_id": null,
+        "scheme_fees": [],
+        "terminal_id": null,
+        "verification": {
+          "card_verification_code": {
+            "result": "not_checked"
+          },
+          "cardholder_address": {
+            "actual_line1": null,
+            "actual_postal_code": null,
+            "provided_line1": null,
+            "provided_postal_code": null,
+            "result": "not_checked"
+          }
+        }
+      }
+    },
+    {
+      "category": "card_authorization_expiration",
+      "created_at": "2026-11-14T10:00:00Z",
+      "card_authorization_expiration": {
+        "id": "card_authorization_expiration_9xt0lw2z3dmwqgwsqmvq",
+        "type": "card_authorization_expiration",
+        "card_authorization_id": "card_authorization_6iqxap6ivd0fo5eu3i8x",
+        "currency": "USD",
+        "expired_amount": 8000,
+        "network": "visa"
+      }
+    }
+  ],
+  "physical_card_id": null,
+  "state": {
+    "authorized_amount": 8000,
+    "fuel_confirmed_amount": 0,
+    "incremented_amount": 0,
+    "refund_authorized_amount": 0,
+    "refunded_amount": 0,
+    "reversed_amount": 0,
+    "settled_amount": 0
+  }
+}

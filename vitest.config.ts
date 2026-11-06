@@ -10,7 +10,13 @@ export default defineConfig({
     globalSetup: ["src/db/test-global-setup.ts"],
     // Integration tests share one test database.
     fileParallelism: false,
-    // Tests never call Stripe (see integrations/stripe/fake-stripe.ts); these only satisfy config.
-    env: { LOG_LEVEL: "silent", STRIPE_SECRET_KEY: "sk_test_vitest", STRIPE_WEBHOOK_SECRET: "whsec_vitest" },
+    // Tests never call Stripe or Increase (see the fakes in integrations/); these only satisfy config.
+    env: {
+      LOG_LEVEL: "silent",
+      STRIPE_SECRET_KEY: "sk_test_vitest",
+      STRIPE_WEBHOOK_SECRET: "whsec_vitest",
+      INCREASE_API_KEY: "increase_vitest",
+      INCREASE_WEBHOOK_SECRET: "increase_vitest",
+    },
   },
 });

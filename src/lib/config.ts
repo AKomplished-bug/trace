@@ -1,8 +1,5 @@
 import { z } from "zod";
 
-// Empty strings (e.g. `STRIPE_SECRET_KEY=` in .env) count as unset.
-const optionalSecret = z.preprocess((v) => (v === "" ? undefined : v), z.string().optional());
-
 /** The placeholder in .env.example; fine locally, refused in production. */
 export const EXAMPLE_SESSION_SECRET = "local-dev-session-secret-change-me-0000";
 
@@ -29,9 +26,10 @@ const schema = z
     // Test mode only: a live key would move real money.
     STRIPE_SECRET_KEY: z.string().regex(/^(sk|rk)_test_/, "must be a Stripe test-mode key (sk_test_… or rk_test_…)"),
     STRIPE_WEBHOOK_SECRET: z.string().startsWith("whsec_", "must be a Stripe webhook signing secret (whsec_…)"),
-    // Optional until the Increase integration lands.
-    INCREASE_API_KEY: optionalSecret,
-    INCREASE_WEBHOOK_SECRET: optionalSecret,
+    // Sandbox only: the adapter always targets sandbox.increase.com, where a production key fails.
+    INCREASE_API_KEY: z.string().min(1),
+    // The event subscription's shared secret (Standard Webhooks signing key).
+    INCREASE_WEBHOOK_SECRET: z.string().min(1),
   })
   .superRefine(noExampleSecretInProduction);
 const sessionSchema = z.object(sessionFields).superRefine(noExampleSecretInProduction);
