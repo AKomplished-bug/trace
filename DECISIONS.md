@@ -317,3 +317,34 @@ CSRF tokens on the login form; NextAuth or another provider (setup a sandbox doe
 **Tradeoff**
 A session can't be revoked or re-scoped before it expires except by rotating `SESSION_SECRET`;
 acceptable for fixed demo users.
+
+## 2026-11-07 — Owner read side: snapshot reads, keyset pages, formula from the domain
+
+**Decision**
+Reads that span tables (balance, transaction detail, timeline — and detail + timeline together
+on the transaction page) run in one `REPEATABLE READ, READ ONLY` transaction, so ledger, holds
+and trace come from the same commit and never take locks. The timeline is ordered by
+`account_seq`, like replay; `seq` is returned alongside. `GET /api/transactions` pages newest
+first on `(created_at, id)` with an opaque cursor that carries `created_at` at microsecond
+precision (rows created in one database transaction share `now()`). The balance explanation's
+terms, operators and formula string live in `domain/ledger/balance.ts` (`BALANCE_TERMS`,
+`BALANCE_FORMULA`) and the API returns them; the UI only renders. Another business's
+transaction answers 404, the same as a missing one. The UI signs an amount only once it has
+posted to the ledger; an active hold shows "on hold", and money that never moved (failed
+funding, expired or released authorization) is struck through with its status.
+
+**Why**
+Separate autocommitted reads could see a settlement's debit without its hold release and show
+an available balance that never existed. Offset paging skips or repeats rows as new
+transactions arrive; a millisecond cursor would skip ties. Keeping the formula in the domain
+means the explanation can't drift from the calculation. A "−$80.00" on an authorization that
+expired would tell the owner money left that never did.
+
+**Alternatives**
+Locking the account for reads; offset pagination; paging on the trace's `account_seq`
+(transactions without trace rows yet would have no position).
+
+**Tradeoff**
+A snapshot transaction per read costs a round-trip for BEGIN/COMMIT. The list relies on
+`transactions_account_created_idx` (account_id, created_at); the id tie-break and the type /
+status filters are applied on top of it, fine at sandbox volumes.

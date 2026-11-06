@@ -4,6 +4,8 @@ import {
   assertLedgerEntryAmount,
   ENTRY_TYPE_FOR_TRANSACTION,
   availableCents,
+  BALANCE_FORMULA,
+  balanceExplanationLines,
   explainBalance,
   IllegalHoldTransitionError,
   InvalidLedgerEntryError,
@@ -88,6 +90,22 @@ describe("card lifecycle balances (spec §5–6, §27)", () => {
       pendingPaymentsCents: 10000,
       availableCents: 32000,
     });
+  });
+});
+
+describe("balance explanation lines", () => {
+  it("states the formula once, and the lines combine to the available balance", () => {
+    expect(BALANCE_FORMULA).toBe("Available balance = Ledger balance − Pending card holds − Pending payments");
+    const payment: HoldAmount = { kind: "PENDING_PAYMENT", status: "ACTIVE", amountCents: 10000 };
+    const { lines, result } = balanceExplanationLines(explainBalance(50000, [auth80, payment]));
+    expect(lines.map((line) => [line.label, line.operator, line.amountCents])).toEqual([
+      ["Ledger balance", "+", 50000],
+      ["Pending card holds", "−", 8000],
+      ["Pending payments", "−", 10000],
+    ]);
+    const combined = lines.reduce((sum, line) => (line.operator === "+" ? sum + line.amountCents : sum - line.amountCents), 0);
+    expect(result).toEqual({ label: "Available balance", amountCents: 32000 });
+    expect(combined).toBe(result.amountCents);
   });
 });
 
