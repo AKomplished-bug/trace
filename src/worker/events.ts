@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { withTransaction, type Db } from "../db/client";
 import { externalEvents } from "../db/schema";
-import { safeErrorForLog, safeErrorMessage } from "../lib/errors";
+import { PermanentEventError, safeErrorForLog, safeErrorMessage } from "../lib/errors";
 import type { Logger } from "../lib/logger";
 import { handlerKey, type EventRouting } from "./handlers";
 
@@ -109,7 +109,8 @@ async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>, ms: numb
 /**
  * Processes one claimed event: `fetch` outside any transaction, then `apply` and the PROCESSED
  * mark in one transaction. Explicitly ignored types are IGNORED; types without a handler and
- * failures go to RETRY with backoff, or FAILED after MAX_ATTEMPTS.
+ * failures go to RETRY with backoff, or FAILED after MAX_ATTEMPTS — or at once for a
+ * `PermanentEventError`.
  */
 export async function processEvent(
   db: Db,
@@ -184,7 +185,8 @@ async function fail(
   message: string,
   error?: unknown,
 ): Promise<ProcessOutcome> {
-  const terminal = event.attempts >= MAX_ATTEMPTS;
+  const permanent = error instanceof PermanentEventError;
+  const terminal = permanent || event.attempts >= MAX_ATTEMPTS;
   const delaySeconds = backoffMs(event.attempts) / 1000;
   const updated = await db
     .update(externalEvents)
@@ -202,7 +204,7 @@ async function fail(
   }
   const outcome = terminal ? "failed" : "retry";
   log.error(
-    { outcome, err, error_message: message, retry_in_seconds: terminal ? undefined : delaySeconds },
+    { outcome, err, error_message: message, permanent, retry_in_seconds: terminal ? undefined : delaySeconds },
     terminal ? "event failed permanently" : "event failed; will retry",
   );
   return outcome;
