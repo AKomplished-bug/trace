@@ -75,6 +75,17 @@ Dependency direction: `app`, `worker` → `services` → `domain`, `db`, `integr
    through `appendTraceEvent` only (it assigns `seq` per transaction and `account_seq` per
    account under the account lock). Timeline, replay and the money graph read only from it and
    order by `account_seq` / `seq`, never by `occurred_at`.
+10. **Trace order within one DB transaction:** apply an effect, then write its row, before the
+    next effect; effect rows (`HOLD_CREATED`, `LEDGER_POSTED`, `HOLD_RELEASED`, `HOLD_EXPIRED`) come
+    before no-effect rows (`STATUS_CHANGED`, `HOLD_EXCEEDS_AVAILABLE`,
+    `SETTLED_AFTER_HOLD_CLOSED`). `appendTraceEvent` records the live balances at the moment it
+    runs, and replay checks every row as "balances before + this row's own effect = recorded
+    after", so a row written before its effect, or after another effect, fails replay. The one
+    sanctioned exception is settlement, which goes **only** through
+    `postLedgerEntry({ releaseHoldForTransactionId })`: it applies the debit and the hold release,
+    then writes LEDGER_POSTED and HOLD_RELEASED back to back with the same final balances, and
+    replay recognises exactly that pair. Never release a settled hold and post its debit any other
+    way in one transaction.
 
 ## Locks
 
