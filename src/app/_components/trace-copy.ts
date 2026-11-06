@@ -63,6 +63,16 @@ function describeStatusChange(step: TimelineStep, type: TransactionType): { titl
     if (step.toStatus === "SETTLED") return { title: "Payment cleared — funding settled", detail: "The payment provider confirmed the money arrived." };
     if (step.toStatus === "FAILED") return { title: "Funding failed", detail: "The payment didn't go through, so no money moved." };
   }
+  if (type === "CARD_PURCHASE") {
+    if (step.toStatus === "SETTLED") {
+      return { title: "Merchant settled — purchase complete", detail: "The settled amount is what left your account; it can differ from the amount authorized." };
+    }
+    if (step.toStatus === "REVERSED") return { title: "Authorization voided", detail: "The merchant cancelled before settling, so no money moved." };
+    if (step.toStatus === "EXPIRED") return { title: "Authorization expired", detail: "The merchant never settled in time, so no money moved." };
+  }
+  if (type === "CARD_REVERSAL" && step.toStatus === "SETTLED") {
+    return { title: "Refund received", detail: "The merchant sent money back for this purchase." };
+  }
   const from = step.fromStatus ? `${statusLabel(step.fromStatus)} → ` : "";
   return { title: `Status: ${from}${statusLabel(step.toStatus)}`, detail: "" };
 }

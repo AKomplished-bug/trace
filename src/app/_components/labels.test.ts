@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { amountView } from "./labels";
+import { amountView, counterparty } from "./labels";
 
 const base = { amountCents: 8000, postedCents: null, holdCents: null, holdStatus: null } as const;
 
@@ -18,5 +18,13 @@ describe("amountView", () => {
     expect(amountView({ ...base, status: "AUTHORIZED", holdCents: 8000, holdStatus: "RELEASED" })).toEqual({ kind: "void", cents: 8000, status: "AUTHORIZED" });
     expect(amountView({ ...base, status: "FAILED", amountCents: 50000 })).toEqual({ kind: "void", cents: 50000, status: "FAILED" });
     expect(amountView({ ...base, status: "PENDING", amountCents: 50000 })).toEqual({ kind: "pending", cents: 50000, status: "PENDING" });
+  });
+});
+
+describe("counterparty", () => {
+  it("names a card purchase's merchant when the provider gave one", () => {
+    expect(counterparty({ type: "CARD_PURCHASE", recipient: null, counterparty: "FIGMA.COM", provider: "increase" })).toBe("FIGMA.COM");
+    expect(counterparty({ type: "CARD_PURCHASE", recipient: null, counterparty: null, provider: "demo" })).toBe("Virtual card");
+    expect(counterparty({ type: "OUTBOUND_PAYMENT", recipient: "Acme Supplies", counterparty: null, provider: "increase" })).toBe("Acme Supplies");
   });
 });
