@@ -286,3 +286,34 @@ links orphans later.
 **Tradeoff**
 Two ways to find a transaction instead of one. The metadata path only links a transaction with
 no PaymentIntent yet, so it can't move one onto another's payment.
+
+## 2026-11-07 — Demo auth: HMAC-signed session cookie
+
+**Decision**
+`/login` lists the seeded users; picking one (no password — it's a sandbox) sets
+`trace_session = base64url(claims).base64url(HMAC-SHA256(SESSION_SECRET))`, HttpOnly,
+SameSite=Lax, Secure in production, 12 h. Claims are `{ userId, role, accountId, expiresAt }`,
+with the owner's account resolved from the database at sign-in. Every API handler calls
+`requireOwner(request)` / `requireOps(request)` (`src/app/api/session.ts`) first; they verify
+the signature only and return a 401/403 Response otherwise. Owner reads and `POST /api/funding`
+use the claim's `accountId`, never an id from the client. The proxy (`src/proxy.ts`) applies the
+same check in front of `/api/ops/**`, `/ops/**` and every page (signed-out pages redirect to
+/login), reading only `SESSION_SECRET` (`sessionConfig()`), so a missing provider key can't break
+/login; the full config still fails fast at startup. Pages call `requirePageSession`, which also
+re-reads the user for the names the shell shows. Login and logout accept only JSON or a
+urlencoded form, and refuse a request whose `Origin` is present and isn't this host (login
+CSRF). In production the `.env.example` `SESSION_SECRET` is refused at startup.
+
+**Why**
+No session table or identity provider to run, the cookie can't be forged or re-pointed at
+another account without the secret, and API auth needs no database round-trip, so handlers stay
+testable with a plain `Request`. SameSite=Lax doesn't stop another site from signing a visitor
+in as someone else with a cross-site form post; the Origin check does.
+
+**Alternatives**
+A sessions table (revocable, one more read per request); re-reading the user on every API call;
+CSRF tokens on the login form; NextAuth or another provider (setup a sandbox doesn't need).
+
+**Tradeoff**
+A session can't be revoked or re-scoped before it expires except by rotating `SESSION_SECRET`;
+acceptable for fixed demo users.
