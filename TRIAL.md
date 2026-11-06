@@ -25,13 +25,13 @@ queue. Details and invariants: `CLAUDE.md`.
 | `businesses`, `users` | demo tenant; users have role `OWNER` or `OPS` |
 | `accounts` | one per business; `ledger_balance_cents` cache (= ledger sum) |
 | `cards` | virtual card, `last4`, `provider_id`, status |
-| `transactions` | business-level money movement: type, status, amount, provider ids, `related_transaction_id`, `idempotency_key` (unique) |
+| `transactions` | business-level money movement: type, status, amount, provider ids (`UNIQUE(provider, provider_object_id, type)`), `related_transaction_id`, `idempotency_key` + `request_hash` (`UNIQUE(account_id, idempotency_key)`) |
 | `holds` | card authorizations and pending payments; `ACTIVE / RELEASED / EXPIRED`; `UNIQUE(transaction_id)` |
-| `payments` | outbound payment detail: recipient, provider id, status |
+| `payments` | outbound payment detail: recipient, provider id, status; idempotency via its transaction |
 | `ledger_entries` | append-only; `UNIQUE(transaction_id, entry_type)` |
-| `external_events` | raw provider events + processing state (also the queue); `UNIQUE(provider, external_event_id)` |
+| `external_events` | raw provider events + processing state (also the queue): attempts, `claim_token`, lease; `UNIQUE(provider, external_event_id)` |
 | `event_deliveries` | every delivery incl. duplicates |
-| `transaction_events` | the trace: ordered lifecycle steps with ledger/available balance after each |
+| `transaction_events` | the trace: lifecycle steps ordered by `seq` (per transaction) and `account_seq` (per account), ledger/available balance after each, `provider_ref` |
 | `audit_events` | who did what, previous/new state |
 | `reconciliation_runs`, `reconciliation_records` | internal vs external comparison results |
 | `investigations`, `investigation_notes` | Ops cases and notes |
@@ -69,7 +69,9 @@ and each would cost hours we need for depth.
 
 ## Open questions
 - Deployment target (Corgi-provided AWS vs our choice) — needed by hour 6 for Stripe webhooks.
-- Second provider — being verified (see `DECISIONS.md` once chosen).
+- Second provider: Increase chosen (see `DECISIONS.md`).
 
 ## What we'd do next
-_Filled in at the end._
+_Filled in at the end._ Already known:
+- Payment outbox columns (submission state, attempts, provider idempotency key) arrive with
+  outbound payments; the `holds(expires_at)` index for active holds arrives with hold expiry.

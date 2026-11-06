@@ -105,3 +105,78 @@ Increase webhooks are thin (`*.created` / `*.updated`) so the worker re-fetches 
 sandbox webhooks are not retried, so we also poll the Events API as a backstop. Demo failure
 cases (dropped / duplicated / delayed delivery) come from a test-only fault injector at
 ingestion, not from the provider.
+
+## 2026-11-07 — Worker claims events with a lease
+
+**Decision**
+Each pass claims one event: `UPDATE … WHERE id = (SELECT … LIMIT 1 FOR UPDATE SKIP LOCKED)` sets
+`PROCESSING`, increments `attempts` (retry budget) and `claim_token` (fencing token), and sets
+`next_attempt_at` to a lease expiry (120 s, longer than a 10 s fetch plus one processing
+transaction). The handler's `fetch` runs after that commit with no transaction open; `apply`
+runs in a transaction that re-reads and locks the event row only if it is still `PROCESSING`
+with the same `claim_token`, and marks it `PROCESSED` in that same transaction. Expired
+`PROCESSING` rows are claimable again. Failures back off 5 s doubling, capped at 15 min; after
+10 attempts (≈36 min of retries) the event is `FAILED`.
+
+**Why**
+A worker that dies after claiming must not strand the event, and a worker whose lease expired
+must not apply effects after another worker has taken over. A separate `claim_token` keeps
+fencing correct when Ops resets `attempts` for a manual retry. One event per claim means a
+poison event can't burn the attempts of others claimed alongside it. Crash loops still end: an
+event claimed more than 10 times is marked `FAILED` without running again. Event types without
+a handler are retried, not ignored, so a missing handler shows up as `FAILED` instead of money
+silently not moving; only an explicit per-provider ignore list yields `IGNORED`.
+
+**Alternatives**
+Hold the row lock for the whole processing transaction and skip `PROCESSING` (no stuck rows, but
+claimed work is invisible to Ops and a batch claim can't be separated from processing); a
+`claimed_by` column plus a separate lease timestamp.
+
+**Tradeoff**
+An event whose worker died waits up to the lease length before being retried; one claim
+round-trip per event instead of per batch.
+
+## 2026-11-07 — Schema conventions
+
+**Decision**
+Postgres enums for every status and type; `transactions.amount_cents` (and holds, payments) is
+a positive magnitude, while `ledger_entries.amount_cents` is signed; ledger entry types carry a
+fixed direction checked in `domain/ledger` (only `ADJUSTMENT` may be either sign); trace events
+use a small set of kinds (`STATUS_CHANGED`, `HOLD_CREATED`, `HOLD_RELEASED`, `HOLD_EXPIRED`,
+`LEDGER_POSTED`) with `from_status`/`to_status` carrying lifecycle detail; one account per
+`(business_id, currency)`; seed rows use fixed ids so re-running is a no-op. Command
+idempotency keys live only on `transactions` (`UNIQUE(account_id, idempotency_key)` plus
+`request_hash`). Each transaction type posts one ledger entry type; a correction is its own
+`ADJUSTMENT` transaction.
+
+**Why**
+Enums make illegal values unrepresentable and adding values is a backward-compatible migration.
+Keeping sign only in the ledger means there is one place that says which way money moved.
+
+**Alternatives**
+Text columns with check constraints; signed transaction amounts.
+
+**Tradeoff**
+Removing or renaming an enum value needs a multi-step migration.
+
+## 2026-11-07 — Late settlement posts even if the hold already closed
+
+**Decision**
+A card settlement whose hold already EXPIRED (or was RELEASED) still posts its ledger debit; the
+trace gets a `SETTLED_AFTER_HOLD_CLOSED` row after `LEDGER_POSTED`. Settlement makes all state
+changes (entry, cached balance, hold status) before writing any trace row, so every trace row
+carries balances that were true once the transaction committed.
+
+**Why**
+Late capture is normal for cards: the provider has moved the money, so refusing the debit would
+leave our ledger wrong and the event stuck in FAILED. Writing trace rows after the state changes
+avoids showing an intermediate available balance (e.g. $500 between a hold release and its
+debit) that the account never had.
+
+**Alternatives**
+Reject and retry until Ops intervenes; a note column on `LEDGER_POSTED` instead of a separate
+kind.
+
+**Tradeoff**
+Available can briefly have been higher than the eventual debit allows (between expiry and late
+capture); the trace makes that visible instead of hiding it.
