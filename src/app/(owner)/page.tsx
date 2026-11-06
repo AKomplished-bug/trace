@@ -3,7 +3,6 @@ import { apiDeps } from "../api/deps";
 import { getAccountSummary, getBalance } from "../../services/account-queries";
 import { listTransactions } from "../../services/transaction-queries";
 import { ActivityTable } from "../_components/activity-table";
-import { BalanceExplanation } from "../_components/balance-explanation";
 import { counterparty, TYPE_LABELS } from "../_components/labels";
 import { Money } from "../_components/money";
 import { StatusBadge, Tag } from "../_components/status-badge";
@@ -52,7 +51,11 @@ export default async function Dashboard() {
               ))}
             </dl>
           </div>
-          <BalanceExplanation balance={balance} />
+          <div className="mt-4 border-t border-neutral-100 pt-3">
+            <Link href="/balance" className="text-sm text-neutral-600 hover:text-neutral-900">
+              How is this calculated? <span aria-hidden>→</span>
+            </Link>
+          </div>
         </div>
 
         <div className="grid gap-4">

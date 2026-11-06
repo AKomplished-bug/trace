@@ -14,7 +14,7 @@ import { applyCardPayment } from "../../services/cards";
 import { DEMO, seedDemoStory } from "../../services/demo";
 import { transitionHold } from "../../services/holds";
 import { postLedgerEntry } from "../../services/ledger";
-import { getAccountReplay, type TransactionReplay } from "../../services/replay-queries";
+import { getAccountReplay, getBalanceExplanation, type TransactionReplay } from "../../services/replay-queries";
 import { appendTraceEvent } from "../../services/trace";
 import { handleGetReplay } from "./transactions/handle-transactions";
 
@@ -274,5 +274,18 @@ describe("GET /api/transactions/:id/replay — verification and access", () => {
     await replayOf(DEMO.purchaseTransactionId);
     expect(await db.select().from(transactionEvents)).toEqual(before);
     expect(await balances(db)).toMatchObject({ cachedCents: 43500, ledgerSumCents: 43500 });
+  });
+});
+
+describe("balance explanation", () => {
+  it("decomposes available into ledger − pending holds, lists each active hold with its transaction, and re-derives it by replay", async () => {
+    await fund(50000);
+    const purchase = await cardPayment("cp_pending", [auth(8000)]);
+    const view = await getBalanceExplanation(db, SEED.accountId);
+    expect(view?.balance).toMatchObject({ ledgerBalanceCents: 50000, pendingCardHoldsCents: 8000, pendingPaymentsCents: 0, availableCents: 42000 });
+    expect(view?.activeHolds).toEqual([
+      expect.objectContaining({ kind: "CARD_AUTHORIZATION", amountCents: 8000, transactionId: purchase, type: "CARD_PURCHASE", status: "AUTHORIZED", counterparty: "FIGMA.COM" }),
+    ]);
+    expect(view?.replay).toMatchObject({ stepCount: 2, matchesStored: true, final: { ledgerCents: 50000, availableCents: 42000 } });
   });
 });

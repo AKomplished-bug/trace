@@ -1,15 +1,12 @@
 import type { Balance } from "../../services/account-queries";
 import { Money } from "./money";
 
-/** "How is this calculated?" — terms, operators and formula all come from the domain via the balance read. */
+/** The balance decomposition — terms, operators and formula all come from the domain via the balance read. */
 export function BalanceExplanation({ balance }: { balance: Balance }) {
   const { formula, lines, result } = balance.explanation;
   return (
-    <details className="group mt-4 border-t border-neutral-100 pt-3">
-      <summary className="cursor-pointer select-none text-sm text-neutral-600 hover:text-neutral-900">
-        How is this calculated?
-      </summary>
-      <table className="mt-3 w-full max-w-md text-sm">
+    <div>
+      <table className="w-full max-w-lg text-sm">
         <tbody>
           {lines.map((line) => (
             <tr key={line.key} className="align-top">
@@ -33,6 +30,6 @@ export function BalanceExplanation({ balance }: { balance: Balance }) {
         </tbody>
       </table>
       <p className="mt-2 font-mono text-xs text-neutral-500">{formula}</p>
-    </details>
+    </div>
   );
 }
