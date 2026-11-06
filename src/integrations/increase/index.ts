@@ -3,7 +3,8 @@ import Increase, { APIError } from "increase";
 import { z } from "zod";
 import type { CardPaymentElement } from "../../domain/cards";
 import type { CardProvider, ProviderCardPayment, SimulateAuthorizationInput, SimulationResult } from "../card-provider";
-import { PaymentProviderError, ProviderRejectedError, WebhookVerificationError, type VerifiedWebhook } from "../payment-provider";
+import { IdempotencyKeyReusedError, PaymentProviderError, ProviderRejectedError, WebhookVerificationError, type VerifiedWebhook } from "../payment-provider";
+import type { CreateTransferInput, ProviderTransfer, TransferProvider } from "../transfer-provider";
 
 export const INCREASE_PROVIDER = "increase";
 /** Every Increase call has this deadline unless overridden; the SDK default is 60 s. */
@@ -13,6 +14,12 @@ export const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 
 /** Event categories that carry card lifecycle changes; the worker re-fetches the card payment. */
 export const INCREASE_CARD_PAYMENT_EVENTS = ["card_payment.created", "card_payment.updated"] as const;
+
+/**
+ * Event categories for outbound ACH transfers (https://increase.com/documentation/api/ach-transfers):
+ * thin, so the worker re-fetches the transfer.
+ */
+export const INCREASE_ACH_TRANSFER_EVENTS = ["ach_transfer.created", "ach_transfer.updated"] as const;
 
 /**
  * Increase event categories a card flow (and the sandbox bootstrap) emits that we deliberately
@@ -52,6 +59,16 @@ const cardPaymentEventSchema = z.object({
   associated_object_type: z.literal("card_payment"),
   associated_object_id: z.string().startsWith("card_payment_"),
 });
+
+const achTransferEventSchema = z.object({
+  associated_object_type: z.literal("ach_transfer"),
+  associated_object_id: z.string().startsWith("ach_transfer_"),
+});
+
+/** The transfer id a stored `ach_transfer.*` event points at (thin webhook: re-fetch it). */
+export function achTransferIdFromEvent(payload: unknown): string {
+  return achTransferEventSchema.parse(payload).associated_object_id;
+}
 
 /** The card payment id a stored `card_payment.*` event points at (thin webhook: re-fetch it). */
 export function cardPaymentIdFromEvent(payload: unknown): string {
@@ -152,11 +169,35 @@ export function toProviderCardPayment(payment: Increase.CardPayment, requestId: 
 }
 
 /**
- * Increase sandbox through the `CardProvider` interface. Always the sandbox environment, so a
+ * Maps an ACH transfer onto the provider-neutral type
+ * (https://increase.com/documentation/api/ach-transfers#the-ach-transfer-object). Settlement shows
+ * as `settlement` becoming non-null while `status` stays `submitted`; a return sets `status:
+ * returned` and `return` (with `settlement` still set if it came back after settling). The
+ * recipient's account number is deliberately not carried over.
+ */
+export function toProviderTransfer(transfer: Increase.ACHTransfer, requestId: string | null): ProviderTransfer {
+  return {
+    id: transfer.id,
+    amountCents: transfer.amount,
+    currency: transfer.currency,
+    status: transfer.status,
+    idempotencyKey: transfer.idempotency_key,
+    snapshot: {
+      submittedToNetwork: transfer.submission !== null,
+      settled: transfer.settlement !== null,
+      returned: transfer.return ? { id: transfer.return.transaction_id, reason: transfer.return.return_reason_code } : null,
+      rejected: transfer.status === "rejected" || transfer.status === "canceled",
+    },
+    requestId,
+  };
+}
+
+/**
+ * Increase sandbox through the `CardProvider` and `TransferProvider` interfaces. Always the sandbox environment, so a
  * production key fails instead of moving real money. Retries are ours, so the SDK never retries.
  * Sandbox rate limit is 20 requests/s; our calls are one or two per user action or event.
  */
-export class IncreaseAdapter implements CardProvider {
+export class IncreaseAdapter implements CardProvider, TransferProvider {
   readonly name = INCREASE_PROVIDER;
   private client: Increase | undefined;
 
@@ -239,6 +280,60 @@ export class IncreaseAdapter implements CardProvider {
   }
 
   /**
+   * https://increase.com/documentation/api/ach-transfers#create-an-ach-transfer, with the
+   * `Idempotency-Key` header (https://increase.com/documentation/idempotency-keys): the same key and
+   * body returns the transfer created first; the same key with a different body is a 409
+   * `idempotency_key_already_used_error` (IdempotencyKeyReusedError).
+   */
+  async createTransfer(input: CreateTransferInput): Promise<ProviderTransfer> {
+    const { data, requestId } = await this.call("create ACH transfer", () =>
+      this.increase().achTransfers.create(
+        {
+          account_id: input.sourceAccountId,
+          amount: input.amountCents,
+          account_number: input.accountNumber,
+          routing_number: input.routingNumber,
+          individual_name: input.recipientName,
+          statement_descriptor: input.statementDescriptor,
+        },
+        { idempotencyKey: input.idempotencyKey },
+      ),
+    );
+    return toProviderTransfer(data, requestId);
+  }
+
+  // https://increase.com/documentation/api/ach-transfers#retrieve-an-ach-transfer
+  async retrieveTransfer(id: string): Promise<ProviderTransfer> {
+    const { data, requestId } = await this.call(`retrieve ACH transfer ${id}`, () => this.increase().achTransfers.retrieve(id));
+    return toProviderTransfer(data, requestId);
+  }
+
+  // https://increase.com/documentation/api/ach-transfers#sandbox-submit-an-ach-transfer
+  async simulateTransferSubmission(id: string): Promise<ProviderTransfer> {
+    const { data, requestId } = await this.call("simulate ACH submission", () => this.increase().simulations.achTransfers.submit(id));
+    return toProviderTransfer(data, requestId);
+  }
+
+  // https://increase.com/documentation/api/ach-transfers#sandbox-settle-an-ach-transfer (submits it first if needed)
+  async simulateTransferSettlement(id: string): Promise<ProviderTransfer> {
+    const { data, requestId } = await this.call("simulate ACH settlement", () => this.increase().simulations.achTransfers.settle(id, {}));
+    return toProviderTransfer(data, requestId);
+  }
+
+  // https://increase.com/documentation/api/ach-transfers#sandbox-return-an-ach-transfer (needs status `submitted`; reason defaults to no_account)
+  async simulateTransferReturn(id: string, reason?: string): Promise<ProviderTransfer> {
+    const body = reason ? { reason: reason as Increase.Simulations.ACHTransferReturnParams["reason"] } : {};
+    const { data, requestId } = await this.call("simulate ACH return", () => this.increase().simulations.achTransfers.return(id, body));
+    return toProviderTransfer(data, requestId);
+  }
+
+  /** The Increase account a card belongs to (links our account for outbound payments in the bootstrap). */
+  async retrieveCardAccountId(cardId: string): Promise<string> {
+    const { data } = await this.call(`retrieve card ${cardId}`, () => this.increase().cards.retrieve(cardId));
+    return data.account_id;
+  }
+
+  /**
    * Sandbox setup for the demo (npm run increase:bootstrap): an account, an account number, an
    * inbound ACH credit so the account can cover authorizations (Increase declines what its own
    * balance can't cover; our ledger is separate), and a virtual card on it.
@@ -287,12 +382,15 @@ function providerError(action: string, error: unknown): PaymentProviderError {
   if (error instanceof PaymentProviderError) return error;
   if (error instanceof APIError && error.status !== undefined) {
     const requestId = error.headers?.get("x-request-id") ?? null;
-    const body = error.error as { type?: unknown } | undefined;
+    const body = error.error as { type?: unknown; resource_id?: unknown } | undefined;
     const type = typeof body?.type === "string" ? body.type : `HTTP ${error.status}`;
     const message = `Increase ${action} failed: ${type}`;
+    if (type === "idempotency_key_already_used_error") {
+      return new IdempotencyKeyReusedError(message, requestId, typeof body?.resource_id === "string" ? body.resource_id : null);
+    }
     // A 4xx other than rate limiting means Increase refused this request; retrying won't help.
     return error.status >= 400 && error.status < 500 && error.status !== 429
-      ? new ProviderRejectedError(message, requestId)
+      ? new ProviderRejectedError(message, requestId, error.status)
       : new PaymentProviderError(message, requestId);
   }
   const name = error instanceof Error ? error.name : "unknown error";

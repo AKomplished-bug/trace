@@ -2,16 +2,19 @@ import { createHmac } from "node:crypto";
 import Increase from "increase";
 import { Webhook } from "standardwebhooks";
 import { describe, expect, it } from "vitest";
-import { PaymentProviderError, ProviderRejectedError, WebhookVerificationError } from "../payment-provider";
+import { IdempotencyKeyReusedError, PaymentProviderError, ProviderRejectedError, WebhookVerificationError } from "../payment-provider";
 import { createFakeIncrease, INCREASE_WEBHOOK_SECRET, seedCardPayment, signedIncreaseWebhook, type CardPaymentJson } from "./fake-increase";
+import achPending from "./fixtures/ach_transfer.pending_submission.json";
+import achReturned from "./fixtures/ach_transfer.returned.json";
 import authorized from "./fixtures/card_payment.authorized.json";
 import expired from "./fixtures/card_payment.expired.json";
 import refunded from "./fixtures/card_payment.refunded.json";
 import reversed from "./fixtures/card_payment.reversed.json";
 import standaloneRefund from "./fixtures/card_payment.standalone_refund.json";
+import achCreatedEvent from "./fixtures/event.ach_transfer.created.json";
 import createdEvent from "./fixtures/event.card_payment.created.json";
 import pendingCreated from "./fixtures/event.pending_transaction.created.json";
-import { cardPaymentIdFromEvent, IncreaseAdapter, toCardPaymentElement, toProviderCardPayment, WEBHOOK_TOLERANCE_SECONDS } from ".";
+import { achTransferIdFromEvent, cardPaymentIdFromEvent, IncreaseAdapter, toCardPaymentElement, toProviderCardPayment, toProviderTransfer, WEBHOOK_TOLERANCE_SECONDS } from ".";
 
 // No fetch override: any API call would go to the real sandbox, so this one is only used for signatures.
 const adapter = new IncreaseAdapter({ apiKey: "increase_unused", webhookSecret: INCREASE_WEBHOOK_SECRET });
@@ -214,5 +217,100 @@ describe("Increase API calls (fake Increase behind the real SDK)", () => {
     const fake = createFakeIncrease();
     seedCardPayment(fake, refunded as unknown as CardPaymentJson);
     expect((await fake.adapter.retrieveCardPayment(refunded.id)).elements).toHaveLength(3);
+  });
+});
+
+describe("ACH transfers", () => {
+  const transferInput = {
+    sourceAccountId: "account_in71c4amph0vgo2qllky",
+    amountCents: 10000,
+    accountNumber: "987654321",
+    routingNumber: "101050001",
+    recipientName: "Globex Supplies",
+    statementDescriptor: "Invoice 2468",
+    idempotencyKey: "payment-1",
+  };
+
+  it("maps a pending and a returned-after-settlement transfer, without the account number", () => {
+    expect(toProviderTransfer(achPending as unknown as Increase.ACHTransfer, "req_1")).toEqual({
+      id: achPending.id,
+      amountCents: 10000,
+      currency: "USD",
+      status: "pending_submission",
+      idempotencyKey: achPending.idempotency_key,
+      snapshot: { submittedToNetwork: false, settled: false, returned: null, rejected: false },
+      requestId: "req_1",
+    });
+    const returned = toProviderTransfer(achReturned as unknown as Increase.ACHTransfer, null);
+    expect(returned.snapshot).toEqual({
+      submittedToNetwork: true,
+      settled: true,
+      returned: { id: achReturned.return.transaction_id, reason: "no_account" },
+      rejected: false,
+    });
+    expect(JSON.stringify(returned)).not.toContain(achReturned.account_number);
+    const rejected = toProviderTransfer({ ...achPending, status: "rejected" } as unknown as Increase.ACHTransfer, null);
+    expect(rejected.snapshot.rejected).toBe(true);
+  });
+
+  it("reads the transfer id from ach_transfer events only", () => {
+    expect(achTransferIdFromEvent(achCreatedEvent)).toBe(achCreatedEvent.associated_object_id);
+    expect(() => achTransferIdFromEvent(createdEvent)).toThrow();
+  });
+
+  it("creates a transfer with our Idempotency-Key; the same key and body returns the same transfer", async () => {
+    const fake = createFakeIncrease();
+    const created = await fake.adapter.createTransfer(transferInput);
+    expect(fake.requests[0]).toEqual({
+      method: "POST",
+      path: "/ach_transfers",
+      idempotencyKey: "payment-1",
+      body: { account_id: transferInput.sourceAccountId, amount: 10000, account_number: "987654321", routing_number: "101050001", individual_name: "Globex Supplies", statement_descriptor: "Invoice 2468" },
+    });
+    expect(created).toMatchObject({ id: expect.stringMatching(/^ach_transfer_fake_/), amountCents: 10000, status: "pending_submission", idempotencyKey: "payment-1" });
+    expect((await fake.adapter.createTransfer(transferInput)).id).toBe(created.id);
+    expect(fake.achTransfers.size).toBe(1);
+  });
+
+  it("maps a reused key with a different body to IdempotencyKeyReusedError naming the existing transfer", async () => {
+    const fake = createFakeIncrease();
+    const created = await fake.adapter.createTransfer(transferInput);
+    const reused = fake.adapter.createTransfer({ ...transferInput, amountCents: 20000 });
+    await expect(reused).rejects.toThrow(IdempotencyKeyReusedError);
+    await expect(fake.adapter.createTransfer({ ...transferInput, amountCents: 20000 })).rejects.toMatchObject({ resourceId: created.id, status: 409 });
+  });
+
+  it("4xx is ProviderRejectedError; 5xx and timeouts are PaymentProviderError, without SDK retries", async () => {
+    const fake = createFakeIncrease({ timeoutMs: 50 });
+    fake.next = "invalid";
+    const invalid = await fake.adapter.createTransfer(transferInput).catch((error: unknown) => error);
+    expect(invalid).toBeInstanceOf(ProviderRejectedError);
+    expect(invalid).toMatchObject({ message: "Increase create ACH transfer failed: invalid_parameters_error", status: 400 });
+    fake.next = "error";
+    const failed = await fake.adapter.createTransfer(transferInput).catch((error: unknown) => error);
+    expect(failed).toBeInstanceOf(PaymentProviderError);
+    expect(failed).not.toBeInstanceOf(ProviderRejectedError);
+    fake.next = "hang";
+    const timedOut = await fake.adapter.createTransfer(transferInput).catch((error: unknown) => error);
+    expect(timedOut).toBeInstanceOf(PaymentProviderError);
+    expect(timedOut).not.toBeInstanceOf(ProviderRejectedError);
+    expect(fake.requests).toHaveLength(3);
+  });
+
+  it("simulates submit → settle → return, refusing a return before submission", async () => {
+    const fake = createFakeIncrease();
+    const { id } = await fake.adapter.createTransfer(transferInput);
+    await expect(fake.adapter.simulateTransferReturn(id)).rejects.toThrow(ProviderRejectedError);
+    expect((await fake.adapter.simulateTransferSubmission(id)).snapshot).toMatchObject({ submittedToNetwork: true, settled: false });
+    expect((await fake.adapter.simulateTransferSettlement(id)).snapshot).toMatchObject({ settled: true, returned: null });
+    const returned = await fake.adapter.simulateTransferReturn(id, "account_closed");
+    expect(returned).toMatchObject({ status: "returned", snapshot: { settled: true, returned: { reason: "account_closed" } } });
+    expect(fake.requests.slice(1).map((r) => r.path)).toEqual([
+      `/simulations/ach_transfers/${id}/return`,
+      `/simulations/ach_transfers/${id}/submit`,
+      `/simulations/ach_transfers/${id}/settle`,
+      `/simulations/ach_transfers/${id}/return`,
+    ]);
+    expect((await fake.adapter.retrieveTransfer(id)).status).toBe("returned");
   });
 });

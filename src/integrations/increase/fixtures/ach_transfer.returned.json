@@ -1,0 +1,65 @@
+{
+  "account_id": "account_in71c4amph0vgo2qllky",
+  "account_number": "987654321",
+  "acknowledgement": {
+    "acknowledged_at": "2026-11-07T14:15:00Z"
+  },
+  "addenda": null,
+  "amount": 10000,
+  "approval": null,
+  "cancellation": null,
+  "company_descriptive_date": null,
+  "company_discretionary_data": null,
+  "company_entry_description": null,
+  "company_id": "1234987601",
+  "company_name": null,
+  "created_at": "2026-11-07T14:00:00Z",
+  "created_by": {
+    "category": "api_key",
+    "api_key": {
+      "description": null
+    }
+  },
+  "currency": "USD",
+  "destination_account_holder": "business",
+  "external_account_id": null,
+  "funding": "checking",
+  "id": "ach_transfer_uoxatyh3lt5evrsdvo7q",
+  "idempotency_key": "payment-3f2c9a52-1b7e-4d0a-9c1e-8d5b2f6a7e10",
+  "inbound_funds_hold": null,
+  "individual_id": null,
+  "individual_name": "Globex Supplies",
+  "network": "ach",
+  "notifications_of_change": [],
+  "pending_transaction_id": null,
+  "preferred_effective_date": {
+    "date": null,
+    "settlement_schedule": "same_day"
+  },
+  "return": {
+    "addenda_information": null,
+    "created_at": "2026-11-09T11:00:00Z",
+    "raw_return_reason_code": "R03",
+    "return_reason_code": "no_account",
+    "trace_number": "111122223292834",
+    "transaction_id": "transaction_a4fhzo4hjxckcn1b49px",
+    "transfer_id": "ach_transfer_uoxatyh3lt5evrsdvo7q"
+  },
+  "routing_number": "101050001",
+  "settlement": {
+    "settled_at": "2026-11-07T18:00:00Z"
+  },
+  "standard_entry_class_code": "corporate_credit_or_debit",
+  "statement_descriptor": "Invoice 2468",
+  "status": "returned",
+  "submission": {
+    "administrative_returns_expected_by": "2026-11-11T11:00:00Z",
+    "effective_date": "2026-11-07",
+    "expected_funds_settlement_at": "2026-11-07T18:00:00Z",
+    "expected_settlement_schedule": "same_day",
+    "submitted_at": "2026-11-07T14:10:00Z",
+    "trace_number": "058349238292834"
+  },
+  "transaction_id": "transaction_uyrp7fld2ium70oa7oi",
+  "type": "ach_transfer"
+}

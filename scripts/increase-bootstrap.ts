@@ -1,6 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { createDb, createPool } from "../src/db/client";
-import { cards } from "../src/db/schema";
+import { accounts, cards } from "../src/db/schema";
 import { SEED } from "../src/db/seed";
 import { IncreaseAdapter } from "../src/integrations/increase";
 import { databaseConfig } from "../src/lib/config";
@@ -9,8 +9,10 @@ import { logger } from "../src/lib/logger";
 
 /**
  * Links the seeded card to a new Increase sandbox card: creates and funds a sandbox account,
- * creates a virtual card, and stores its id (and real last4) on the seeded card. Idempotent: a
- * card that is already linked is left alone. Needs DATABASE_URL and INCREASE_API_KEY only; the
+ * creates a virtual card, and stores its id (and real last4) on the seeded card. Also stores the
+ * card's Increase account on the seeded account, which originates its outbound ACH payments (for
+ * a card linked before that, it reads the card's account from Increase). Idempotent: a card and
+ * account that are already linked are left alone. Needs DATABASE_URL and INCREASE_API_KEY only; the
  * key is never logged. Run after db:migrate and db:seed.
  */
 const SANDBOX_FUNDING_CENTS = 10_000_000; // $100,000 float at Increase so authorizations aren't declined.
@@ -25,11 +27,12 @@ try {
   const db = createDb(pool);
   const [card] = await db.select({ providerId: cards.providerId }).from(cards).where(eq(cards.id, SEED.cardId));
   if (!card) throw new Error("Seeded card not found; run npm run db:seed first");
+  // webhookSecret is unused here: the script never receives webhooks.
+  const increase = new IncreaseAdapter({ apiKey, webhookSecret: "unused" });
+  let providerAccountId: string | undefined;
   if (card.providerId) {
-    logger.info({ card_id: SEED.cardId, provider_card_id: card.providerId, outcome: "already_linked" }, "card already linked to Increase; nothing to do");
+    logger.info({ card_id: SEED.cardId, provider_card_id: card.providerId, outcome: "already_linked" }, "card already linked to Increase");
   } else {
-    // webhookSecret is unused here: the script never receives webhooks.
-    const increase = new IncreaseAdapter({ apiKey, webhookSecret: "unused" });
     const created = await increase.bootstrapSandboxCard({ name: "Trace demo", fundingCents: SANDBOX_FUNDING_CENTS });
     const linked = await db
       .update(cards)
@@ -39,6 +42,23 @@ try {
     logger.info(
       { card_id: SEED.cardId, provider_account_id: created.accountId, provider_card_id: created.cardId, outcome: linked.length ? "linked" : "lost_race" },
       linked.length ? "seeded card linked to a new Increase sandbox card" : "card was linked concurrently; the new sandbox card is unused",
+    );
+    if (linked.length) providerAccountId = created.accountId;
+  }
+  const [account] = await db.select({ providerId: accounts.providerId }).from(accounts).where(eq(accounts.id, SEED.accountId));
+  if (account?.providerId) {
+    logger.info({ account_id: SEED.accountId, provider_account_id: account.providerId, outcome: "already_linked" }, "account already linked to Increase; nothing to do");
+  } else {
+    const [linkedCard] = await db.select({ providerId: cards.providerId }).from(cards).where(eq(cards.id, SEED.cardId));
+    providerAccountId ??= await increase.retrieveCardAccountId(linkedCard.providerId!);
+    const linked = await db
+      .update(accounts)
+      .set({ providerId: providerAccountId })
+      .where(and(eq(accounts.id, SEED.accountId), isNull(accounts.providerId)))
+      .returning({ id: accounts.id });
+    logger.info(
+      { account_id: SEED.accountId, provider_account_id: providerAccountId, outcome: linked.length ? "linked" : "lost_race" },
+      linked.length ? "seeded account linked to its Increase account for outbound payments" : "account was linked concurrently",
     );
   }
 } catch (error) {
