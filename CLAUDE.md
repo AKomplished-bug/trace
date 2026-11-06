@@ -94,11 +94,13 @@ Dependency direction: `app`, `worker` → `services` → `domain`, `db`, `integr
 |---|---|---|
 | `FUNDING` | `stripe` | PaymentIntent id |
 | `CARD_PURCHASE` | `increase` | `card_payment` id |
-| `CARD_REVERSAL` | `increase` | reversal / refund element id (one transaction per element, so partial reversals stack); `related_transaction_id` → the purchase |
+| `CARD_REVERSAL` | `increase` | `card_refund` element id (one transaction per refund, so partial refunds stack); `related_transaction_id` → the purchase when the refund is on the purchase's `card_payment`, else null (Increase may put a refund on its own `card_payment` with no link) |
 | `OUTBOUND_PAYMENT`, `PAYMENT_RETURN` | `increase` | `ach_transfer` id |
 
 The element behind each lifecycle step (settlement, reversal, return id) goes in
-`transaction_events.provider_ref`, which reconciliation matches on.
+`transaction_events.provider_ref`, which reconciliation matches on. For card payments it is also
+how the worker knows which elements it already applied. A `card_reversal` element (voiding an
+authorization) moves no money, so it is a step on the purchase's trace, not a transaction.
 
 ## Idempotency (three layers)
 
@@ -202,6 +204,7 @@ npm run db:seed:demo # optional, dev only: base seed + the $500 → $80 auth →
 npm run db:generate  # write a new SQL migration from src/db/schema.ts (review and commit it)
 npm run dev          # Next.js web + API
 npm run worker       # event worker (src/worker/index.ts)
+npm run increase:bootstrap  # once: link the seeded card to a funded Increase sandbox card
 npm run typecheck
 npm run lint
 npm test             # Vitest: unit + integration against DATABASE_URL_TEST (needs db:up)

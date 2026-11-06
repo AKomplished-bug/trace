@@ -348,3 +348,181 @@ Locking the account for reads; offset pagination; paging on the trace's `account
 A snapshot transaction per read costs a round-trip for BEGIN/COMMIT. The list relies on
 `transactions_account_created_idx` (account_id, created_at); the id tie-break and the type /
 status filters are applied on top of it, fine at sandbox volumes.
+
+## 2026-11-07 — Card events: re-fetch the card payment and apply only its new elements
+
+**Decision**
+`card_payment.created` and `card_payment.updated` share one handler. `fetch` re-reads the whole
+`card_payment` (Increase webhooks are thin); `apply` locks the account, re-reads the purchase,
+collects the element ids already applied (the purchase's `transaction_events.provider_ref`s and
+its CARD_REVERSAL `provider_object_id`s) and applies the rest in Increase's element order, all in
+the event's transaction. Element ids, not event ids, are the unit of idempotency.
+
+**Why**
+Every update carries every step so far, so an event can't say "this is the settlement". Diffing
+by element id makes a duplicate, a later event for the same state, an older snapshot, and two
+workers racing on created + updated all converge on one effect per element; the account lock
+serializes them. A refund also has `UNIQUE(provider, provider_object_id, type)` behind it.
+
+**Alternatives**
+Map event → one element (impossible with thin events); store a per-card-payment "last applied
+element index" (breaks if Increase ever inserts or reorders elements).
+
+**Tradeoff**
+One extra indexed read of the purchase's trace per event. A step we can't place (settlement,
+reversal or expiration with no recorded authorization, e.g. a force-posted settlement; an
+unlinked card) retries and ends `FAILED` for Ops, per the out-of-order rule.
+
+## 2026-11-07 — An approved authorization is recorded even above available balance
+
+**Decision**
+An authorization element always creates the AUTHORIZED purchase and ACTIVE hold, even when it
+takes available below zero; the trace then gets `HOLD_EXCEEDS_AVAILABLE` after `HOLD_CREATED`
+and the worker logs `authorized_over_available`.
+
+**Why**
+Increase has already approved it (sandbox simulations, and real authorizations without
+real-time decisions), so the merchant will settle regardless. Refusing to record it would make
+our available balance wrong and hide the exposure; the flag makes it visible instead.
+
+**Alternatives**
+Decline in real time via Increase real-time decisions (the right production answer, and a
+separate integration); fail the event to Ops.
+
+**Tradeoff**
+Available can be negative. Until real-time decisions exist, nothing stops the card spending
+money the ledger doesn't have — Increase only checks its own sandbox account balance.
+
+## 2026-11-07 — Card reversal vs refund; purchase status after each
+
+**Decision**
+Following Increase's lifecycle guide, a `card_reversal` cancels (part of) an authorization and
+never moves settled money; a `card_refund` is money back. So: a full reversal of an AUTHORIZED
+purchase releases the hold and moves it to `REVERSED` (existing enum value, no ledger entry); a
+reversal or expiration of a purchase that is no longer AUTHORIZED is a no-op. Each refund is a
+new `CARD_REVERSAL` transaction (`SETTLED`, ledger credit, keyed by the refund element id) linked
+to the purchase, which stays `SETTLED`. A settlement after a void or expiry still posts (late
+capture). The owner API's `reverse` simulates a reversal before settlement and a refund after.
+
+**Why**
+The purchase did settle; partial refunds stack, so no single purchase status ("REVERSED" after
+the first $20 of $65?) would be true. The reversals point at it, and the money graph nets them.
+
+**Alternatives**
+Mark the purchase `REVERSED` once refunds cover it; a `VOIDED` status for authorization voids
+(`REVERSED` already says "never completed").
+
+**Tradeoff**
+"Fully refunded" is derived (sum of linked reversals), not a status.
+
+## 2026-11-07 — Refunds on their own card payment are credited unlinked
+
+**Decision**
+A `card_refund` on a card payment that has no purchase of ours is still credited, as a
+`CARD_REVERSAL` with `related_transaction_id` null (worker logs `unlinked_refund`).
+
+**Why**
+Increase's lifecycle guide says Visa doesn't tie refunds to the original payment, so a refund
+can arrive on its own `card_payment` with no authorization. The money has moved; retrying until
+`FAILED` would leave the ledger short for every such refund.
+
+**Alternatives**
+Retry → Ops (the settlement-without-authorization rule); guess the purchase by merchant and
+amount.
+
+**Tradeoff**
+Some refunds show no link to their purchase. Linking them is reconciliation / Ops work.
+
+## 2026-11-07 — Card lifecycle shapes we don't model fail to Ops
+
+**Decision**
+Partial authorization reversals, increments, fuel confirmations, card financials, refund
+authorizations, a second authorization or a second settlement (multi-capture) on one card
+payment, and non-USD or non-positive amounts throw `UnsupportedCardElementError`
+(`PermanentEventError`): the event is `FAILED` at once and nothing from that snapshot is applied.
+Declines, 3DS authentications, card validations and balance inquiries are skipped (no money, no
+hold).
+
+**Why**
+Each needs a model change (hold amounts that shrink or grow; more than one settlement entry per
+purchase, which `UNIQUE(transaction_id, entry_type)` forbids). Guessing would post the wrong
+amount; failing at once gets it to Ops instead of burning 36 minutes of retries.
+
+**Alternatives**
+Adjust `holds.amount_cents` in place for partial reversals and increments; one CARD_PURCHASE
+child transaction per capture.
+
+**Tradeoff**
+Hotel-style partial reversals and multi-capture are common in production; the sandbox demo only
+drives full voids and single settlements.
+
+## 2026-11-07 — Card simulations call Increase from the API; state changes only via the webhook
+
+**Decision**
+`POST /api/cards/:id/{authorize,settle,reverse,expire}` (owner only) reads the card and purchase,
+calls the matching Increase sandbox simulation with no transaction open (10 s timeout, SDK
+retries off), and returns `202` with what was requested. It writes nothing: the result arrives as
+a `card_payment.*` webhook and the worker applies it. Settle and reverse re-fetch the card payment
+to find Increase's pending transaction / settlement transaction ids rather than storing them.
+Timeouts and 5xx are `502 provider_unavailable`; Increase refusing the step (4xx) is
+`422 provider_rejected`. Steps on a purchase re-fetch its card payment first: one on a different
+card is a 404, and `reverse` with `amountCents` before settlement is refused
+(`422 partial_reversal_not_supported`) because the worker can't apply a partial void (see below).
+The adapter always targets the sandbox environment.
+
+**Why**
+One path changes card state, the same one real card activity takes, so the demo exercises
+ingestion, idempotency and the worker for real. Re-fetching avoids new columns for ids we only
+need to simulate.
+
+**Alternatives**
+Apply the simulation result directly in the API (two writers of card state); store
+`pending_transaction_id` and settlement transaction ids on our rows.
+
+**Tradeoff**
+Settle and reverse are two Increase calls. After a timeout the outcome at Increase is unknown,
+so the caller should check activity before retrying. Sandbox webhooks are not retried, so until
+the Events API backstop lands a webhook missed while the app is down leaves the step unapplied.
+
+## 2026-11-07 — Increase webhooks: Standard Webhooks, verified by hand
+
+**Decision**
+`verifyWebhook` checks `webhook-signature` (`v1,` + base64 HMAC-SHA256 of
+`${webhook-id}.${webhook-timestamp}.${body}`), keyed with `INCREASE_WEBHOOK_SECRET` as given,
+accepting any one of several space-separated signatures, with a constant-time compare and a
+5-minute timestamp window. The stored event type is the Increase event `category`.
+
+**Why**
+That is the scheme Increase documents (and its SDK's `unwrap` uses the raw secret as the key the
+same way). Doing it in ~15 lines keeps the check explicit and testable without an SDK client.
+
+**Alternatives**
+The SDK's `events.unwrap` (needs a configured client); the `standardwebhooks` library directly.
+
+**Tradeoff**
+Our own crypto code to maintain; covered by tests for valid, tampered, stale, future, wrong-secret,
+rotated and malformed signatures.
+
+## 2026-11-07 — An unmodelled element blocks its whole card payment until Ops resolves it
+
+**Decision**
+When a card payment contains an element we don't model (see above), the event fails permanently
+and nothing from that snapshot is applied — including later, modelled elements such as the
+settlement of the remaining amount. Every later event for that card payment fails the same way,
+because each re-fetch still contains the element. The sandbox API refuses the one such step it
+could otherwise create (a partial void before settlement).
+
+**Why**
+Elements apply in order inside one transaction; skipping one and applying the rest would post
+effects on top of a hold or balance we know is wrong, with no record of the gap. A loud, stuck
+card payment is safer than a quietly wrong ledger.
+
+**Alternatives**
+Skip unmodelled elements and apply the rest (silent drift); apply everything before the
+unmodelled element and stop there (partial state, harder to reason about on retry).
+
+**Tradeoff**
+Until Ops resolves it, the ledger and Increase disagree for that card payment: Increase has moved
+(or held) money that our ledger and available balance don't show. Resolution needs the Ops tools
+— a manual `ADJUSTMENT` with an audit note, then marking the event resolved — which come with the
+Ops work; today the only signal is the `FAILED` event and its `UnsupportedCardElementError`.
