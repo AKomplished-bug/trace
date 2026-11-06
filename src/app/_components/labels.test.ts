@@ -13,6 +13,14 @@ describe("amountView", () => {
     expect(amountView({ ...base, status: "AUTHORIZED", holdCents: 8000, holdStatus: "ACTIVE" })).toEqual({ kind: "held", cents: 8000 });
   });
 
+  it("shows an outbound payment as held until it completes, and unsigned once returned before settling", () => {
+    for (const status of ["PENDING", "SUBMITTED"] as const) {
+      expect(amountView({ ...base, status, amountCents: 10000, holdCents: 10000, holdStatus: "ACTIVE" })).toEqual({ kind: "held", cents: 10000 });
+    }
+    expect(amountView({ ...base, status: "COMPLETED", amountCents: 10000, postedCents: -10000, holdCents: 10000, holdStatus: "RELEASED" })).toEqual({ kind: "posted", cents: -10000 });
+    expect(amountView({ ...base, status: "RETURNED", amountCents: 10000, holdCents: 10000, holdStatus: "RELEASED" })).toEqual({ kind: "void", cents: 10000, status: "RETURNED" });
+  });
+
   it("shows money that never moved as void with its status", () => {
     expect(amountView({ ...base, status: "EXPIRED", holdCents: 8000, holdStatus: "EXPIRED" })).toEqual({ kind: "void", cents: 8000, status: "EXPIRED" });
     expect(amountView({ ...base, status: "AUTHORIZED", holdCents: 8000, holdStatus: "RELEASED" })).toEqual({ kind: "void", cents: 8000, status: "AUTHORIZED" });
