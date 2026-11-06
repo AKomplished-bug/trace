@@ -8,14 +8,16 @@ changing anything.
 ## Architecture — modular monolith, two processes, one Postgres
 
 ```text
-Stripe / second provider / card simulator
+Stripe (funding) / Increase (cards, ACH)
         │ webhook: verify signature → INSERT raw event → 200   (no business logic here)
         ▼
 external_events   UNIQUE(provider, external_event_id)   ← also the work queue
-        │ worker claims due rows: FOR UPDATE SKIP LOCKED
+        │ worker claims one due row: FOR UPDATE SKIP LOCKED, lease + claim_token
         ▼
-one DB transaction per event:
-  lock account row → conditional state transition → holds / ledger entries
+handler.fetch: provider reads, outside any transaction, with a timeout
+        ▼
+one DB transaction per event (handler.apply):
+  lock event row → lock account row → conditional state transition → holds / ledger entries
   → transaction_events (trace) → cached ledger balance → mark event PROCESSED
         ▼
 reconciliation job: pulls provider records via API, compares with ours
@@ -35,11 +37,11 @@ src/
     ledger/ cards/ payments/ funding/ reconciliation/ replay/
   db/              schema, migrations, queries, transaction helper
   integrations/    one folder per provider; adapters map provider payloads → internal events
-    stripe/  <second-provider>/  card-simulator/
+    stripe/  increase/
   services/        application layer: orchestrates domain + db inside one transaction
   worker/          job loop and handlers
   app/             Next.js pages and api route handlers (thin: validate → service → respond)
-  lib/             logger, config, ids, money formatting
+  lib/             logger, config, ids, money formatting, safe error messages
 ```
 
 Dependency direction: `app`, `worker` → `services` → `domain`, `db`, `integrations`.
@@ -50,43 +52,88 @@ Dependency direction: `app`, `worker` → `services` → `domain`, `db`, `integr
 1. Amounts are **integer cents** (`bigint` in Postgres, `number` in TS within safe range). USD
    only. Never floats. Store UTC, render local.
 2. **The ledger is append-only.** No UPDATE or DELETE on `ledger_entries`, ever. Corrections
-   are new `ADJUSTMENT` entries. Sign convention: credit = positive, debit = negative.
+   are new `ADJUSTMENT` transactions. Sign convention: credit = positive, debit = negative.
+   Each transaction type posts exactly one entry type (`ENTRY_TYPE_FOR_TRANSACTION` in
+   `domain/ledger`), so a transaction has at most one ledger entry.
 3. `accounts.ledger_balance_cents` is a cache, written in the same DB transaction as the ledger
    entries, and must always equal `SUM(ledger_entries.amount_cents)` for the account.
 4. **Available = ledger balance − SUM(active holds).** Holds cover card authorizations and
    pending outbound payments. Nothing else reduces available balance.
 5. Authorization creates a hold and **no ledger entry**. Settlement posts the ledger debit and
-   releases the hold in the same transaction.
+   releases the hold in the same transaction — `postLedgerEntry({ releaseHoldForTransactionId })`
+   makes every state change first (entry, cached balance, hold status), then writes
+   LEDGER_POSTED and HOLD_RELEASED, both with the final balances. The trace never shows an
+   available balance that wasn't true outside the transaction. A settlement whose hold already
+   EXPIRED or was RELEASED (late capture) still posts; `SETTLED_AFTER_HOLD_CLOSED` records it.
 6. Reversal/return is a **new transaction** linked by `related_transaction_id`; the original is
    never modified beyond its status.
 7. Processing the same external event twice yields the same state as processing it once.
 8. Every state transition is conditional on the current state
    (`UPDATE … WHERE id = $1 AND status = $2`); zero rows updated = illegal/duplicate transition,
    handled explicitly.
-9. Every financial change writes a `transaction_events` row (the trace) in the same transaction.
-   Timeline, replay and the money graph read only from it.
+9. Every financial change writes a `transaction_events` row (the trace) in the same transaction,
+   through `appendTraceEvent` only (it assigns `seq` per transaction and `account_seq` per
+   account under the account lock). Timeline, replay and the money graph read only from it and
+   order by `account_seq` / `seq`, never by `occurred_at`.
+
+## Locks
+
+- Order, always: **event row → account row → transaction / hold / payment rows.** Taking them
+  in one order is what rules out deadlocks between the worker and API commands.
+- The account row is the serialization point for its money: every writer of ledger entries,
+  holds or trace rows takes `SELECT … FOR NO KEY UPDATE` on it first (`lockAccount`). NO KEY
+  so inserts that reference the account aren't blocked by FK checks.
+- No lock is held across a network call (see Event processing).
+
+## Provider ids
+
+`transactions.provider_object_id` names the provider object the transaction tracks, unique per
+`(provider, provider_object_id, type)`:
+
+| Transaction type | `provider` | `provider_object_id` |
+|---|---|---|
+| `FUNDING` | `stripe` | PaymentIntent id |
+| `CARD_PURCHASE` | `increase` | `card_payment` id |
+| `CARD_REVERSAL` | `increase` | reversal / refund element id (one transaction per element, so partial reversals stack); `related_transaction_id` → the purchase |
+| `OUTBOUND_PAYMENT`, `PAYMENT_RETURN` | `increase` | `ach_transfer` id |
+
+The element behind each lifecycle step (settlement, reversal, return id) goes in
+`transaction_events.provider_ref`, which reconciliation matches on.
 
 ## Idempotency (three layers)
 
 - **External events:** `UNIQUE(provider, external_event_id)`; every delivery, including
   duplicates, is recorded in `event_deliveries` so Ops sees "received twice, no effect".
-- **Commands:** `POST /payments`, `POST /funding` require `Idempotency-Key`; stored with a
-  unique constraint on the row it creates. Same key + same body → same response; same key +
+- **Commands:** `POST /payments`, `POST /funding` require `Idempotency-Key`; stored only on
+  `transactions` as `UNIQUE(account_id, idempotency_key)` with a `request_hash` of the body
+  (payments link to their transaction). Same key + same body → same response; same key +
   different body → 409.
 - **Ledger:** `UNIQUE(transaction_id, entry_type)` on `ledger_entries` so one transaction can't
-  post the same effect twice.
+  post the same effect twice. The same effect with a different amount is a `LedgerConflictError`,
+  never a silent no-op.
 
 ## Event processing
 
 - Webhook handlers: verify signature, insert raw event `ON CONFLICT DO NOTHING`, record the
   delivery, return 200. No other work.
-- Worker claims `WHERE status IN ('RECEIVED','RETRY') AND next_attempt_at <= now()` with
-  `FOR UPDATE SKIP LOCKED`, processes inside one transaction, then marks PROCESSED.
+- Worker claims **one event per pass**: `WHERE status IN ('RECEIVED','RETRY') AND
+  next_attempt_at <= now()` (or `PROCESSING` with an expired lease) with `FOR UPDATE SKIP
+  LOCKED`, setting `PROCESSING`, `attempts + 1`, `claim_token + 1` and a lease. `attempts` is
+  the retry budget; `claim_token` is the fencing token — every later update is conditional on
+  it, so a worker whose lease expired can't apply effects.
+- Handlers have two phases: `fetch` (optional provider reads; after the claim commits, no
+  transaction open, 10 s timeout) and `apply` (effects, in the transaction that locks the event
+  row and marks it PROCESSED). `apply` must treat `fetched` as possibly stale: lock the account,
+  re-read the entity, and transition only from the expected status.
+- Event types with no handler are retried and end `FAILED` (they surface to Ops). Only types in
+  the provider's explicit ignore list become `IGNORED`.
 - **No network call inside a DB transaction or while holding a row lock.** Outbound provider
   calls happen in the worker, after commit, using a persisted intent (outbox) and the same
   idempotency key on retries.
-- Failures: `attempts++`, exponential backoff, terminal `FAILED` after N attempts with the error
-  and likely cause stored. Ops can retry; retries are safe because of the rules above.
+- Failures: exponential backoff (5 s doubling, capped at 15 min), terminal `FAILED` after 10
+  attempts with a sanitized error stored (error class + our message; database errors as
+  SQLSTATE and constraint name, never `detail` or values). Ops retry resets `attempts` and bumps
+  `claim_token`; retries are safe because of the rules above.
 - Out-of-order (e.g. settlement before authorization): retry with backoff; if it never
   resolves, it surfaces as an Ops exception — never silently dropped.
 
@@ -103,7 +150,7 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
 - Every provider call goes through its adapter, has a timeout (default 10 s), logs the provider
   request id with our entity ids, and handles failure where it happens.
 - Secrets only from env (`DATABASE_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-  `SECOND_PROVIDER_API_KEY`, `SECOND_PROVIDER_WEBHOOK_SECRET`, `SESSION_SECRET`). Validated
+  `INCREASE_API_KEY`, `INCREASE_WEBHOOK_SECRET`, `SESSION_SECRET`). Validated
   at startup with zod; fail fast with a message naming the missing variable. Never in client code.
 
 ## API conventions
@@ -143,4 +190,16 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
 
 ## Commands
 
-Filled in by the scaffold PR (dev, worker, db up/migrate/seed, typecheck, lint, test, build).
+```sh
+npm ci && cp .env.example .env   # first time
+npm run db:up        # Postgres 16 in docker on localhost:5433 (databases trace, trace_test)
+npm run db:migrate   # apply src/db/migrations to DATABASE_URL
+npm run db:seed      # idempotent demo data (Acme Inc., owner + ops users, $0 account, card)
+npm run db:generate  # write a new SQL migration from src/db/schema.ts (review and commit it)
+npm run dev          # Next.js web + API
+npm run worker       # event worker (src/worker/index.ts)
+npm run typecheck
+npm run lint
+npm test             # Vitest: unit + integration against DATABASE_URL_TEST (needs db:up)
+npm run build
+```
