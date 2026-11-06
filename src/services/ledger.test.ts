@@ -16,8 +16,9 @@ function post(input: Omit<PostLedgerEntryInput, "accountId">) {
 }
 
 async function expectInvariant() {
-  const { cachedCents, ledgerSumCents } = await balances(db);
+  const { cachedCents, ledgerSumCents, replayMatches } = await balances(db);
   expect(cachedCents).toBe(ledgerSumCents);
+  expect(replayMatches).toBe(true);
   return cachedCents;
 }
 

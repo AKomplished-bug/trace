@@ -72,7 +72,8 @@ describe("POST /api/funding", () => {
     const claimed = await claimNextEvent(db, { leaseSeconds: 60 });
     expect(await processEvent(db, claimed!, { handlers, ignored: { stripe: STRIPE_IGNORED_EVENT_TYPES } }, logger)).toBe("processed");
 
-    const { cachedCents, ledgerSumCents } = await balances(db);
+    const { cachedCents, ledgerSumCents, replayMatches } = await balances(db);
+    expect(replayMatches).toBe(true);
     const available = await withTransaction(db, async (tx) => accountAvailableCents(tx, SEED.accountId, (await lockAccount(tx, SEED.accountId)).ledgerBalanceCents));
     expect([cachedCents, ledgerSumCents, available]).toEqual([50000, 50000, 50000]);
     const trace = await db.select().from(transactionEvents).orderBy(asc(transactionEvents.accountSeq));
