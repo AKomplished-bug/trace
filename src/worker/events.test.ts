@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { withTransaction } from "../db/client";
 import { businesses, externalEvents, users } from "../db/schema";
 import { createTestDb, resetDb } from "../db/test-helpers";
+import { PermanentEventError } from "../lib/errors";
 import { newId } from "../lib/ids";
 import { logger } from "../lib/logger";
 import { backoffMs, claimNextEvent, MAX_ATTEMPTS, processEvent } from "./events";
@@ -199,6 +200,20 @@ describe("processEvent", () => {
     });
     expect(await processEvent(db, await claim(), routing, logger)).toBe("failed");
     expect(await eventRow(id)).toMatchObject({ status: "FAILED", attempts: MAX_ATTEMPTS, lastError: "Error: still broken" });
+  });
+
+  it("marks the event FAILED at once on a PermanentEventError, rolling back apply's writes", async () => {
+    const [id] = await insertEvents(1);
+    const routing = routingWith({
+      async apply(tx) {
+        await tx.insert(businesses).values({ name: "half-done" });
+        throw new PermanentEventError("amount differs from ours");
+      },
+    });
+    expect(await processEvent(db, await claim(), routing, logger)).toBe("failed");
+    expect(await eventRow(id)).toMatchObject({ status: "FAILED", attempts: 1, lastError: "PermanentEventError: amount differs from ours" });
+    expect(await db.select().from(businesses)).toHaveLength(1);
+    expect(await claimNextEvent(db, LEASE)).toBeNull();
   });
 
   it("fails an event whose earlier attempts never finished, without running it again", async () => {

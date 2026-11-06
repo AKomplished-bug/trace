@@ -4,6 +4,18 @@
  * names — never the server message, `detail` or query params, which can contain row values.
  */
 
+/**
+ * Retrying can't change the outcome (the event contradicts our records), so the worker marks the
+ * event FAILED for Ops at once instead of spending its retry budget. Subclass it with a specific
+ * name. Lives here, not in the worker, because services throw it.
+ */
+export class PermanentEventError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PermanentEventError";
+  }
+}
+
 interface DatabaseErrorLike extends Error {
   code: string;
   severity: string;
