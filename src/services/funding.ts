@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
+import { z } from "zod";
 import { withTransaction, type Db, type Tx } from "../db/client";
 import { externalEvents, transactions } from "../db/schema";
 import { fundingOutcomeStatus, nextFundingStatus, type FundingEvent } from "../domain/funding";
 import { ENTRY_TYPE_FOR_TRANSACTION } from "../domain/ledger";
 import type { PaymentProvider, ProviderPayment } from "../integrations/payment-provider";
-import { safeErrorForLog, safeErrorMessage } from "../lib/errors";
+import { PermanentEventError, safeErrorForLog, safeErrorMessage } from "../lib/errors";
 import type { Logger } from "../lib/logger";
 import { lockAccount } from "./accounts";
 import { postLedgerEntry } from "./ledger";
@@ -32,19 +33,35 @@ export class FundingProviderError extends Error {
   }
 }
 
-/** No FUNDING transaction tracks this provider payment (yet). */
+/** The payment names one of our transactions in its metadata, but that FUNDING transaction isn't there (yet). Retryable. */
 export class FundingNotFoundError extends Error {
-  constructor(provider: string, paymentId: string) {
-    super(`No FUNDING transaction for ${provider} payment ${paymentId}`);
+  constructor(provider: string, paymentId: string, transactionId: string) {
+    super(`No FUNDING transaction ${transactionId} for ${provider} payment ${paymentId}`);
     this.name = "FundingNotFoundError";
   }
 }
 
-/** The provider's view of the payment doesn't support the event (wrong status, currency or amount). */
-export class FundingOutcomeMismatchError extends Error {
+/** The payment carries none of our metadata, so no account of ours asked for it. Permanent. */
+export class FundingNotOursError extends PermanentEventError {
+  constructor(provider: string, paymentId: string) {
+    super(`${provider} payment ${paymentId} has no Trace transaction_id metadata and matches no FUNDING transaction`);
+    this.name = "FundingNotOursError";
+  }
+}
+
+/** The provider's payment contradicts our transaction (amount, currency, or a different payment id). Permanent: Ops decides. */
+export class FundingOutcomeMismatchError extends PermanentEventError {
   constructor(message: string) {
     super(message);
     this.name = "FundingOutcomeMismatchError";
+  }
+}
+
+/** The provider's payment status doesn't (yet) match the event, e.g. still processing. Retryable. */
+export class FundingStatusMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FundingStatusMismatchError";
   }
 }
 
@@ -159,9 +176,14 @@ export interface FundingOutcomeInput {
  * Applies a provider funding outcome inside the event's processing transaction: locks the
  * account, re-reads the FUNDING transaction, and moves it PENDING → SETTLED (posting the ledger
  * credit) or PENDING → FAILED (no ledger effect), with trace rows. An outcome already applied is
- * a no-op. Throws (so the event retries and, if it never resolves, ends FAILED for Ops) when no
- * transaction tracks the payment, when the provider's payment doesn't support the event, or when
- * the amount received differs from ours — that credit is never posted automatically.
+ * a no-op.
+ *
+ * The transaction is found by provider_object_id, or — when the API never stored the payment id
+ * (the provider call timed out after the provider created it, or the id write failed) — by the
+ * `transaction_id` we put in the payment's metadata, and the id is stored now. Retryable throws:
+ * that transaction isn't there yet, or the payment's status isn't final. Permanent throws (event
+ * FAILED at once, for Ops): no metadata of ours, the transaction already tracks a different
+ * payment, or the amount or currency differs — that credit is never posted automatically.
  */
 export async function applyFundingOutcome(
   tx: Tx,
@@ -171,21 +193,25 @@ export async function applyFundingOutcome(
 ): Promise<void> {
   const { payment } = input;
   const log = logger.child({ event_id: input.eventId, provider_object_id: payment.id, funding_event: event });
-  const [found] = await tx
-    .select({ id: transactions.id, accountId: transactions.accountId })
-    .from(transactions)
-    .where(
-      and(
-        eq(transactions.provider, input.provider),
-        eq(transactions.providerObjectId, payment.id),
-        eq(transactions.type, "FUNDING"),
-      ),
-    );
-  if (!found) throw new FundingNotFoundError(input.provider, payment.id);
+  const found = await findFundingTransaction(tx, input.provider, payment);
 
   await lockAccount(tx, found.accountId);
   const [transaction] = await tx.select().from(transactions).where(eq(transactions.id, found.id)).for("no key update");
   const txLog = log.child({ account_id: transaction.accountId, transaction_id: transaction.id });
+  if (transaction.providerObjectId !== payment.id) {
+    if (transaction.providerObjectId !== null) {
+      // A second payment for one transaction: e.g. a retry after the provider's idempotency window.
+      throw new FundingOutcomeMismatchError(
+        `transaction ${transaction.id} tracks payment ${transaction.providerObjectId}, not ${payment.id}`,
+      );
+    }
+    await tx
+      .update(transactions)
+      .set({ providerObjectId: payment.id, updatedAt: sql`now()` })
+      .where(and(eq(transactions.id, transaction.id), isNull(transactions.providerObjectId)));
+    transaction.providerObjectId = payment.id;
+    txLog.warn({ outcome: "linked_by_metadata" }, "payment id was never stored by the API; linked from the payment's metadata");
+  }
 
   if (event === "FUNDING_FAILED" && payment.status === "SUCCEEDED") {
     // A later attempt succeeded; its payment_intent.succeeded event settles the transaction.
@@ -194,7 +220,7 @@ export async function applyFundingOutcome(
   }
   const expected = event === "FUNDING_CONFIRMED" ? "SUCCEEDED" : "FAILED";
   if (payment.status !== expected) {
-    throw new FundingOutcomeMismatchError(`${event} but provider reports payment ${payment.id} as ${payment.status}`);
+    throw new FundingStatusMismatchError(`${event} but provider reports payment ${payment.id} as ${payment.status}`);
   }
 
   const to = fundingOutcomeStatus(event);
@@ -253,6 +279,29 @@ export async function applyFundingOutcome(
   });
   await linkEvent(tx, input.eventId, transaction.id);
   txLog.info({ outcome: next === "SETTLED" ? "settled" : "failed", from_status: transaction.status, to_status: next }, "funding outcome applied");
+}
+
+/**
+ * The FUNDING transaction for `payment`: by provider_object_id, else by the transaction id in the
+ * payment's metadata (only a transaction without a payment id, or with this one; a different id
+ * is caught under the lock by the caller). Reads only; the caller locks account, then transaction.
+ */
+async function findFundingTransaction(tx: Tx, provider: string, payment: ProviderPayment) {
+  const columns = { id: transactions.id, accountId: transactions.accountId };
+  const [byPaymentId] = await tx
+    .select(columns)
+    .from(transactions)
+    .where(and(eq(transactions.provider, provider), eq(transactions.providerObjectId, payment.id), eq(transactions.type, "FUNDING")));
+  if (byPaymentId) return byPaymentId;
+
+  const transactionId = z.uuid().safeParse(payment.metadata.transactionId);
+  if (!transactionId.success) throw new FundingNotOursError(provider, payment.id);
+  const [byMetadata] = await tx
+    .select(columns)
+    .from(transactions)
+    .where(and(eq(transactions.id, transactionId.data), eq(transactions.provider, provider), eq(transactions.type, "FUNDING")));
+  if (!byMetadata) throw new FundingNotFoundError(provider, payment.id, transactionId.data);
+  return byMetadata;
 }
 
 /** Points the external event at the transaction it affected, for Ops. The event row is already locked by the worker. */

@@ -39,6 +39,8 @@ export interface ProviderPayment {
   currency: string;
   /** The provider element that moved the money (e.g. the charge), if any. */
   chargeId: string | null;
+  /** What we attached when creating it; null when absent (the payment wasn't created by us). */
+  metadata: { transactionId: string | null };
   /** Provider request id of the call that returned this, for logs. */
   requestId: string | null;
 }

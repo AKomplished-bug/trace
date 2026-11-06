@@ -18,8 +18,11 @@ export interface FakeStripe {
   /** PaymentIntents by id; tests may edit them to simulate the provider's view. */
   intents: Map<string, Intent>;
   requests: Array<{ method: string; path: string; idempotencyKey: string | null; body: URLSearchParams }>;
-  /** How the next create behaves: succeed, decline the card, or never answer (timeout). */
-  nextCreate: "succeed" | "decline" | "hang";
+  /**
+   * How the next create behaves: succeed, decline the card, never answer (timeout, nothing
+   * created), or create the PaymentIntent and then never answer (timeout after Stripe charged).
+   */
+  nextCreate: "succeed" | "decline" | "hang" | "hang_after_create";
 }
 
 export function createFakeStripe({ timeoutMs = 10_000 }: { timeoutMs?: number } = {}): FakeStripe {
@@ -51,15 +54,16 @@ export function createFakeStripe({ timeoutMs = 10_000 }: { timeoutMs?: number } 
       if (replay) return respond(replay.status, replay.body);
       const mode = fake.nextCreate;
       fake.nextCreate = "succeed";
-      if (mode === "hang") {
-        return new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)));
-      }
+      const hang = () =>
+        new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)));
+      if (mode === "hang") return hang();
       const amount = Number(body.get("amount"));
       const metadata = Object.fromEntries(
         [...body.entries()].filter(([k]) => k.startsWith("metadata[")).map(([k, v]) => [k.slice(9, -1), v]),
       );
       const id = `pi_fake_${++counter}`;
       const base = mode === "decline" ? failedIntent : succeededIntent;
+      // Like Stripe: metadata is exactly what the request sent (none if none).
       const intent: Intent = {
         ...structuredClone(base),
         id,
@@ -74,6 +78,7 @@ export function createFakeStripe({ timeoutMs = 10_000 }: { timeoutMs?: number } 
           ? { status: 402, body: { error: { type: "card_error", code: "card_declined", message: "Your card was declined.", payment_intent: intent } } }
           : { status: 200, body: intent };
       if (idempotencyKey) byIdempotencyKey.set(idempotencyKey, result);
+      if (mode === "hang_after_create") return hang();
       return respond(result.status, result.body);
     }
 

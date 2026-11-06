@@ -53,6 +53,7 @@ describe("mapping fixtures", () => {
       amountReceivedCents: 50000,
       currency: "USD",
       chargeId: "ch_3TfuNd2eZvKYlo2C0Q1b7mWd",
+      metadata: { transactionId: "fixture" },
       requestId: "req_1",
     });
   });

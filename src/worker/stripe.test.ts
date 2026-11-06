@@ -14,7 +14,7 @@ import { STRIPE_IGNORED_EVENT_TYPES } from "../integrations/stripe";
 import { newId } from "../lib/ids";
 import { logger } from "../lib/logger";
 import { accountAvailableCents, lockAccount } from "../services/accounts";
-import { createFunding } from "../services/funding";
+import { createFunding, FundingProviderError } from "../services/funding";
 import { claimNextEvent, processEvent, type ProcessOutcome } from "./events";
 import { handlerKey, type EventRouting } from "./handlers";
 import { stripeHandlers } from "./stripe";
@@ -134,16 +134,16 @@ describe("Stripe funding through webhook ingestion and the worker", () => {
     expect(await account()).toEqual({ ledgerCents: 50000, availableCents: 50000 });
   });
 
-  it("trusts the fetched PaymentIntent: an amount mismatch posts nothing and retries toward Ops", async () => {
+  it("trusts the fetched PaymentIntent: an amount mismatch posts nothing and fails to Ops at once", async () => {
     const { transaction: created } = await fund(50000);
     const intentId = created.providerObjectId!;
     const event = stripeEvent(paymentSucceededEvent, intentId);
     fake.intents.get(intentId)!.amount_received = 45000;
     await deliver(event);
-    expect(await drain()).toEqual(["retry"]);
+    expect(await drain()).toEqual(["failed"]);
 
     const stored = await eventRow(event.id);
-    expect(stored.status).toBe("RETRY");
+    expect(stored).toMatchObject({ status: "FAILED", attempts: 1 });
     expect(stored.lastError).toMatch(/^FundingOutcomeMismatchError: .* received 45000 cents, .* expects 50000/);
     expect((await transaction(created.id)).status).toBe("PENDING");
     expect(await db.$count(ledgerEntries)).toBe(0);
@@ -190,19 +190,86 @@ describe("Stripe funding through webhook ingestion and the worker", () => {
     expect(await db.$count(transactionEvents)).toBe(1);
   });
 
-  it("retries an event that arrives before its PaymentIntent id is stored, then settles", async () => {
-    const intent = seedIntent(fake, structuredClone(succeededIntent));
-    const transactionId = await createTransaction(db, { type: "FUNDING", amountCents: 50000, provider: "stripe" });
+  it("credits a funding whose Stripe call timed out after Stripe charged, via the PaymentIntent metadata", async () => {
+    fake = Object.assign(createFakeStripe({ timeoutMs: 50 }), { nextCreate: "hang_after_create" as const });
+    await expect(fund(50000)).rejects.toThrow(FundingProviderError);
+    const [pending] = await db.select().from(transactions);
+    expect(pending).toMatchObject({ status: "PENDING", providerObjectId: null });
+    const [intent] = fake.intents.values();
+    expect(intent.metadata).toMatchObject({ transaction_id: pending.id });
+
+    const event = stripeEvent(paymentSucceededEvent, intent.id);
+    await deliver(event);
+    expect(await drain()).toEqual(["processed"]);
+    expect(await transaction(pending.id)).toMatchObject({ status: "SETTLED", providerObjectId: intent.id });
+    expect(await eventRow(event.id)).toMatchObject({ status: "PROCESSED", transactionId: pending.id });
+    expect(await account()).toEqual({ ledgerCents: 50000, availableCents: 50000 });
+
+    // The client's late retry with the same key now just returns the settled transaction.
+    const replay = await fund(50000, pending.idempotencyKey!);
+    expect(replay).toMatchObject({ replayed: true, transaction: { status: "SETTLED", providerObjectId: intent.id } });
+    expect(fake.requests.filter((r) => r.method === "POST")).toHaveLength(1);
+  });
+
+  it("credits a funding whose PaymentIntent id write failed, via the metadata", async () => {
+    const { transaction: created } = await fund(50000);
+    const intentId = created.providerObjectId!;
+    // Same state as a failed UPDATE after Stripe answered: the PaymentIntent exists, our row has no id.
+    await db.update(transactions).set({ providerObjectId: null }).where(eq(transactions.id, created.id));
+    await deliver(stripeEvent(paymentSucceededEvent, intentId));
+    expect(await drain()).toEqual(["processed"]);
+    expect(await transaction(created.id)).toMatchObject({ status: "SETTLED", providerObjectId: intentId });
+    expect(await account()).toEqual({ ledgerCents: 50000, availableCents: 50000 });
+  });
+
+  it("fails to Ops at once when a second PaymentIntent names a transaction that tracks another", async () => {
+    const { transaction: created } = await fund(50000);
+    // E.g. a retry after Stripe's 24 h idempotency window created a second PaymentIntent.
+    const second = seedIntent(fake, { ...structuredClone(succeededIntent), id: "pi_second", metadata: { transaction_id: created.id } });
+    const event = stripeEvent(paymentSucceededEvent, second.id);
+    await deliver(event);
+    expect(await drain()).toEqual(["failed"]);
+    expect(await eventRow(event.id)).toMatchObject({
+      status: "FAILED",
+      attempts: 1,
+      lastError: `FundingOutcomeMismatchError: transaction ${created.id} tracks payment ${created.providerObjectId}, not pi_second`,
+    });
+    expect(await transaction(created.id)).toMatchObject({ status: "PENDING", providerObjectId: created.providerObjectId });
+    expect(await db.$count(ledgerEntries)).toBe(0);
+  });
+
+  it("fails to Ops at once for a PaymentIntent without our metadata", async () => {
+    const foreign = seedIntent(fake, { ...structuredClone(succeededIntent), id: "pi_dashboard", metadata: {} });
+    const event = stripeEvent(paymentSucceededEvent, foreign.id);
+    await deliver(event);
+    expect(await drain()).toEqual(["failed"]);
+    expect(await eventRow(event.id)).toMatchObject({
+      status: "FAILED",
+      attempts: 1,
+      lastError: "FundingNotOursError: stripe payment pi_dashboard has no Trace transaction_id metadata and matches no FUNDING transaction",
+    });
+  });
+
+  it("fails to Ops at once on a currency mismatch", async () => {
+    const { transaction: created } = await fund(50000);
+    fake.intents.get(created.providerObjectId!)!.currency = "eur";
+    await deliver(stripeEvent(paymentSucceededEvent, created.providerObjectId!));
+    expect(await drain()).toEqual(["failed"]);
+    expect(await db.$count(ledgerEntries)).toBe(0);
+  });
+
+  it("retries while the transaction named in the metadata isn't there yet", async () => {
+    const missing = newId();
+    const intent = seedIntent(fake, { ...structuredClone(succeededIntent), metadata: { transaction_id: missing } });
     const event = stripeEvent(paymentSucceededEvent, intent.id);
     await deliver(event);
     expect(await drain()).toEqual(["retry"]);
-    expect((await eventRow(event.id)).lastError).toBe(`FundingNotFoundError: No FUNDING transaction for stripe payment ${intent.id}`);
+    expect((await eventRow(event.id)).lastError).toBe(`FundingNotFoundError: No FUNDING transaction ${missing} for stripe payment ${intent.id}`);
 
-    await db.update(transactions).set({ providerObjectId: intent.id }).where(eq(transactions.id, transactionId));
+    const transactionId = await createTransaction(db, { id: missing, type: "FUNDING", amountCents: 50000, provider: "stripe" });
     await skipBackoff();
     expect(await drain()).toEqual(["processed"]);
-    expect((await transaction(transactionId)).status).toBe("SETTLED");
-    expect(await account()).toEqual({ ledgerCents: 50000, availableCents: 50000 });
+    expect(await transaction(transactionId)).toMatchObject({ status: "SETTLED", providerObjectId: intent.id });
   });
 
   it("marks listed irrelevant Stripe events IGNORED", async () => {
