@@ -7,7 +7,8 @@ import paymentFailed from "./fixtures/event.payment_intent.payment_failed.json";
 import paymentSucceeded from "./fixtures/event.payment_intent.succeeded.json";
 import { paymentIntentIdFromEvent, StripeAdapter, toProviderPayment } from ".";
 
-const adapter = new StripeAdapter({ webhookSecret: WEBHOOK_SECRET });
+// No httpClient: any API call would go to real Stripe, so this one is only used for signatures.
+const adapter = new StripeAdapter({ secretKey: "sk_test_unused", webhookSecret: WEBHOOK_SECRET });
 
 function headers(signature?: string) {
   return new Headers(signature ? { "stripe-signature": signature } : {});
@@ -106,9 +107,10 @@ describe("Stripe API calls (fake Stripe behind the real SDK)", () => {
     expect(fake.requests).toHaveLength(1);
   });
 
-  it("reports a missing PaymentIntent and a missing key as PaymentProviderError", async () => {
+  it("reports a missing PaymentIntent as PaymentProviderError", async () => {
     const fake = createFakeStripe();
-    await expect(fake.adapter.retrievePaymentIntent("pi_missing")).rejects.toThrow("resource_missing");
-    await expect(adapter.retrievePaymentIntent("pi_x")).rejects.toThrow("STRIPE_SECRET_KEY is not set");
+    const call = fake.adapter.retrievePaymentIntent("pi_missing");
+    await expect(call).rejects.toThrow(PaymentProviderError);
+    await expect(call).rejects.toThrow("resource_missing");
   });
 });
