@@ -66,6 +66,7 @@ export function toProviderPayment(intent: Stripe.PaymentIntent, requestId: strin
     amountReceivedCents: intent.amount_received,
     currency: intent.currency.toUpperCase(),
     chargeId: typeof charge === "string" ? charge : (charge?.id ?? null),
+    metadata: { transactionId: intent.metadata?.transaction_id ?? null },
     requestId,
   };
 }
