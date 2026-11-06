@@ -55,8 +55,9 @@ function fund(amountCents: number, idempotencyKey = newId()) {
 }
 
 async function account() {
-  const { cachedCents, ledgerSumCents } = await balances(db);
+  const { cachedCents, ledgerSumCents, replayMatches } = await balances(db);
   expect(cachedCents).toBe(ledgerSumCents);
+  expect(replayMatches).toBe(true);
   const availableCents = await withTransaction(db, async (tx) =>
     accountAvailableCents(tx, SEED.accountId, (await lockAccount(tx, SEED.accountId)).ledgerBalanceCents),
   );

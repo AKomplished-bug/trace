@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import type pg from "pg";
 import { createDb, createPool, type Db } from "./client";
+import { getAccountReplay } from "../services/replay-queries";
 import { seed, SEED } from "./seed";
 import { accounts, ledgerEntries, transactions } from "./schema";
 
@@ -33,7 +34,11 @@ export async function createTransaction(
   return row.id;
 }
 
-/** The money invariant: cached balance == SUM(ledger_entries) for the account. */
+/**
+ * The money invariants: cached balance == SUM(ledger_entries) for the account, and replaying the
+ * account's whole trace from zero matches every recorded row and the stored balances and holds
+ * (`replayMatches`).
+ */
 export async function balances(db: Db, accountId: string = SEED.accountId) {
   const [cached] = await db
     .select({ cents: accounts.ledgerBalanceCents })
@@ -43,5 +48,6 @@ export async function balances(db: Db, accountId: string = SEED.accountId) {
     .select({ cents: sql<number>`coalesce(sum(${ledgerEntries.amountCents}), 0)`.mapWith(Number) })
     .from(ledgerEntries)
     .where(eq(ledgerEntries.accountId, accountId));
-  return { cachedCents: cached.cents, ledgerSumCents: ledger.cents };
+  const replay = await getAccountReplay(db, accountId);
+  return { cachedCents: cached.cents, ledgerSumCents: ledger.cents, replayMatches: replay?.matchesStored ?? false };
 }

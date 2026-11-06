@@ -43,8 +43,9 @@ describe("seedDemoStory", () => {
 
     await seedDemoStory(db);
     expect(await snapshot()).toEqual(first);
-    const { cachedCents, ledgerSumCents } = await balances(db);
+    const { cachedCents, ledgerSumCents, replayMatches } = await balances(db);
     expect([cachedCents, ledgerSumCents]).toEqual([43500, 43500]);
+    expect(replayMatches).toBe(true);
     expect((await db.select().from(holds).where(eq(holds.accountId, SEED.accountId)))[0].amountCents).toBe(8000);
   });
 
