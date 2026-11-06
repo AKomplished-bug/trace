@@ -15,6 +15,7 @@ export const EFFECT_COPY: Record<ExplanationKey, string> = {
   hold_expired: "The hold lapsed: available goes back up by the held amount. The ledger doesn't move.",
   hold_already_closed: "The hold had already closed, so nothing changes.",
   settled_after_hold_closed: "The hold had already stopped reserving funds, so only the settlement above changed your balances.",
+  submitted_to_network: "The payment went out to the ACH network. No money has moved yet, so balances don't change.",
   status_changed: "A status update. Balances don't change.",
 };
 

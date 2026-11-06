@@ -73,6 +73,7 @@ const ROLE: Record<TraceKind, ExternalRole> = {
   HOLD_RELEASED: "release",
   HOLD_EXPIRED: "expiration",
   STATUS_CHANGED: "status_update",
+  SUBMITTED_TO_NETWORK: "status_update",
 };
 
 const CLOSES_HOLD: ReadonlySet<TraceKind> = new Set(["HOLD_RELEASED", "HOLD_EXPIRED", "SETTLED_AFTER_HOLD_CLOSED"]);

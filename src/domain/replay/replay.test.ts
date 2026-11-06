@@ -77,6 +77,11 @@ class Account {
     this.row(tx, "STATUS_CHANGED", { amountCents: cents, toStatus: "SETTLED" });
   }
 
+  /** An outbound payment sent to the ACH network: a step that moves no money. */
+  sentToNetwork(tx: string) {
+    this.row(tx, "SUBMITTED_TO_NETWORK");
+  }
+
   /** One transaction's rows, each with the balances of the account's previous row. */
   trace(tx: string): ReplayEvent[] {
     return this.rows
@@ -202,6 +207,21 @@ describe("replay of the spec stories", () => {
     expect(money(result.steps)).toEqual(["500/400", "400/400", "400/400", "400/400"]);
     expect(result.final.holds["hold_pay"]).toMatchObject({ kind: "PENDING_PAYMENT", status: "RELEASED" });
     expect(money(replayTransaction(account.trace("return")).steps)).toEqual(["500/500", "500/500"]);
+    expectAccountReplays(account);
+  });
+});
+
+describe("outbound payment network step", () => {
+  it("SUBMITTED_TO_NETWORK moves no money and is explained as such", () => {
+    const account = new Account();
+    account.fund("fund", 50000);
+    account.hold("pay", 10000, "PENDING_PAYMENT");
+    account.sentToNetwork("pay");
+    account.settle("pay", 10000, "COMPLETED");
+    const result = replayTransaction(account.trace("pay"));
+    expect(result.consistent).toBe(true);
+    expect(result.steps.map((s) => s.explanation)).toEqual(["hold_created", "submitted_to_network", "settlement_released_hold", "hold_released_with_settlement", "status_changed"]);
+    expect(money(result.steps)).toEqual(["500/400", "500/400", "400/400", "400/400", "400/400"]);
     expectAccountReplays(account);
   });
 });
