@@ -65,9 +65,29 @@ export class PaymentProviderError extends Error {
 
 /** The provider answered and refused the request (e.g. an invalid operation); retrying the same request won't help. */
 export class ProviderRejectedError extends PaymentProviderError {
-  constructor(message: string, requestId: string | null) {
+  constructor(
+    message: string,
+    requestId: string | null,
+    /** The HTTP status Increase answered with; null when we refused before calling. */
+    readonly status: number | null = null,
+  ) {
     super(message, requestId);
     this.name = "ProviderRejectedError";
+  }
+}
+
+/**
+ * The idempotency key was already used for a request with different arguments. An object exists
+ * for that key (`resourceId`), so the outcome must not be treated as "nothing was created".
+ */
+export class IdempotencyKeyReusedError extends ProviderRejectedError {
+  constructor(
+    message: string,
+    requestId: string | null,
+    readonly resourceId: string | null,
+  ) {
+    super(message, requestId, 409);
+    this.name = "IdempotencyKeyReusedError";
   }
 }
 
