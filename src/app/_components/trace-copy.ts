@@ -73,6 +73,12 @@ function describeStatusChange(step: TimelineStep, type: TransactionType): { titl
     if (step.toStatus === "EXPIRED") return { title: "Authorization expired", detail: "The merchant never settled in time, so no money moved." };
   }
   if (type === "OUTBOUND_PAYMENT") {
+    if (step.fromStatus === "PENDING" && step.toStatus === "PENDING") {
+      return {
+        title: "Couldn't confirm the payment was sent",
+        detail: "We stopped retrying because we couldn't tell whether our bank partner received it. The amount stays reserved until we know; nothing has left your ledger.",
+      };
+    }
     if (step.toStatus === "PENDING") return { title: "Payment requested", detail: "Saved and waiting to be sent to our bank partner. Nothing has moved yet." };
     if (step.toStatus === "SUBMITTED") return { title: "Accepted by our bank partner", detail: "The transfer is with the bank. It completes once the recipient's bank has the money." };
     if (step.toStatus === "COMPLETED") return { title: "Payment completed", detail: "The money reached the recipient's bank." };

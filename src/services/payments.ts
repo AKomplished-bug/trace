@@ -1,9 +1,11 @@
-import { and, eq } from "drizzle-orm";
-import { withTransaction, type Db } from "../db/client";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { withTransaction, type Db, type Tx } from "../db/client";
 import { accounts, holds, payments, transactions } from "../db/schema";
+import type { PaymentStatus } from "../domain/payments";
 import type { Logger } from "../lib/logger";
 import { accountAvailableCents, lockAccount } from "./accounts";
 import { IdempotencyConflictError, requestHash } from "./funding";
+import { transitionHold } from "./holds";
 import { appendTraceEvent } from "./trace";
 
 export type Payment = typeof payments.$inferSelect;
@@ -121,4 +123,118 @@ export async function createPayment(
     "payment ready for submission",
   );
   return result;
+}
+
+/** The idempotency key we send the provider for a payment: one per payment, so no retry or crash can send it twice. */
+export function paymentIdempotencyKey(paymentId: string): string {
+  return `payment-${paymentId}`;
+}
+
+/** Statement descriptor sent with the transfer when the owner gave no description. */
+export const DEFAULT_STATEMENT_DESCRIPTOR = "Payment";
+
+/** Who is moving a payment, for its trace rows. */
+export interface PaymentStep {
+  /** The external event behind the change; absent for the submitter. */
+  eventId?: string | null;
+  providerRef?: string | null;
+}
+
+/** Reads and row-locks a payment. Call with its account already locked (lock order: account → payment). */
+export async function lockPayment(tx: Tx, paymentId: string): Promise<Payment> {
+  const [payment] = await tx.select().from(payments).where(eq(payments.id, paymentId)).for("no key update");
+  if (!payment) throw new Error(`Payment ${paymentId} not found`);
+  return payment;
+}
+
+/**
+ * Conditional status move of a locked payment and its transaction (they always share a status),
+ * plus its STATUS_CHANGED trace row. Zero rows updated means someone else moved it: throws, so the
+ * caller's transaction rolls back.
+ */
+export async function setPaymentStatus(
+  tx: Tx,
+  payment: Payment,
+  to: PaymentStatus,
+  step: PaymentStep,
+  extra: Partial<Pick<Payment, "providerObjectId" | "lastSubmitError">> & { submitted?: boolean } = {},
+): Promise<Payment> {
+  const { submitted, ...fields } = extra;
+  const [updated] = await tx
+    .update(payments)
+    .set({ ...fields, status: to, updatedAt: sql`now()`, ...(submitted ? { submittedAt: sql`now()` } : {}) })
+    .where(and(eq(payments.id, payment.id), eq(payments.status, payment.status)))
+    .returning();
+  const moved = await tx
+    .update(transactions)
+    .set({ status: to, updatedAt: sql`now()`, ...(fields.providerObjectId ? { providerObjectId: fields.providerObjectId } : {}) })
+    .where(and(eq(transactions.id, payment.transactionId), eq(transactions.status, payment.status)))
+    .returning({ id: transactions.id });
+  if (!updated || !moved.length) throw new Error(`Payment ${payment.id} changed status concurrently; expected ${payment.status}`);
+  await appendTraceEvent(tx, {
+    accountId: payment.accountId,
+    transactionId: payment.transactionId,
+    kind: "STATUS_CHANGED",
+    amountCents: payment.amountCents,
+    fromStatus: payment.status,
+    toStatus: to,
+    externalEventId: step.eventId,
+    providerRef: step.providerRef,
+  });
+  return updated;
+}
+
+/** PENDING → SUBMITTED: the provider accepted transfer `transferId`; stores it as the external reference. */
+export function markPaymentSubmitted(tx: Tx, payment: Payment, transferId: string, step: PaymentStep): Promise<Payment> {
+  return setPaymentStatus(tx, payment, "SUBMITTED", { ...step, providerRef: transferId }, { providerObjectId: transferId, lastSubmitError: null, submitted: true });
+}
+
+/**
+ * → FAILED, only when we know no money left (the provider refused or rejected it): the hold is
+ * released first (HOLD_RELEASED, the effect row), then the status moves.
+ */
+export async function failPayment(tx: Tx, payment: Payment, input: PaymentStep & { error?: string }): Promise<Payment> {
+  await transitionHold(tx, { accountId: payment.accountId, transactionId: payment.transactionId, event: "RELEASE", externalEventId: input.eventId, providerRef: input.providerRef });
+  return setPaymentStatus(tx, payment, "FAILED", input, input.error === undefined ? {} : { lastSubmitError: input.error });
+}
+
+/**
+ * The submitter stops retrying a locked PENDING payment whose outcome at the provider is unknown:
+ * `submit_gave_up_at` takes it out of the claim, the hold stays, and the trace gets a
+ * STATUS_CHANGED PENDING → PENDING row (no new trace kind; the copy reads it as "couldn't
+ * confirm"). A later webhook for the transfer applies the normal steps.
+ */
+export async function markPaymentSubmissionGivenUp(tx: Tx, payment: Payment, error: string): Promise<void> {
+  const [updated] = await tx
+    .update(payments)
+    .set({ submitGaveUpAt: sql`now()`, lastSubmitError: error, updatedAt: sql`now()` })
+    .where(and(eq(payments.id, payment.id), eq(payments.status, "PENDING"), isNull(payments.submitGaveUpAt)))
+    .returning({ id: payments.id });
+  if (!updated) throw new Error(`Payment ${payment.id} changed concurrently; expected PENDING and still being submitted`);
+  await appendTraceEvent(tx, {
+    accountId: payment.accountId,
+    transactionId: payment.transactionId,
+    kind: "STATUS_CHANGED",
+    amountCents: payment.amountCents,
+    fromStatus: "PENDING",
+    toStatus: "PENDING",
+  });
+}
+
+/**
+ * The outbox: payments still waiting to be accepted by the provider (how many, and how long the
+ * oldest has waited), and those the submitter gave up on with the outcome unknown (for Ops).
+ */
+export async function outboxBacklog(db: Db): Promise<{ pending: number; oldestAgeSeconds: number | null; givenUp: number }> {
+  const [row] = await db
+    .select({
+      pending: sql<number>`count(*) FILTER (WHERE ${payments.submitGaveUpAt} IS NULL)`.mapWith(Number),
+      oldestAgeSeconds: sql<number | null>`extract(epoch from now() - min(${payments.createdAt}) FILTER (WHERE ${payments.submitGaveUpAt} IS NULL))`.mapWith((value) =>
+        value === null ? null : Math.round(Number(value)),
+      ),
+      givenUp: sql<number>`count(*) FILTER (WHERE ${payments.submitGaveUpAt} IS NOT NULL)`.mapWith(Number),
+    })
+    .from(payments)
+    .where(eq(payments.status, "PENDING"));
+  return row;
 }
