@@ -8,6 +8,10 @@ import { counterparty, ENTRY_LABELS, providerLabel, TYPE_LABELS, type Transactio
 import { LocalTime } from "../../../_components/local-time";
 import { Money } from "../../../_components/money";
 import { StatusBadge, Tag } from "../../../_components/status-badge";
+import { MoneyGraph } from "../../../_components/money-graph";
+import { OpenTargetDetails } from "../../../_components/open-target-details";
+import { EFFECT_COPY, whyFinalBalance } from "../../../_components/replay-copy";
+import { ReplayPlayer, type PlayerStep } from "../../../_components/replay-player";
 import { describeStep, stepAmount } from "../../../_components/trace-copy";
 import { TransactionAmount } from "../../../_components/transaction-amount";
 import { requirePageSession } from "../../../_lib/auth";
@@ -45,7 +49,7 @@ function TraceStep({ step, type, last }: { step: TimelineStep; type: Transaction
   const amount = stepAmount(step);
   const posted = step.kind === "LEDGER_POSTED";
   return (
-    <li className="relative pb-5 pl-7 last:pb-0">
+    <li id={`step-${step.id}`} className="relative scroll-mt-4 rounded pb-5 pl-7 last:pb-0 target:bg-amber-50/60">
       {!last && <span aria-hidden className="absolute left-[7px] top-4 h-full w-px bg-neutral-200" />}
       <span
         aria-hidden
@@ -111,7 +115,7 @@ export default async function TransactionPage({ params }: { params: Promise<{ id
   const db = apiDeps().db;
   const trace = await getTransactionWithReplay(db, session.accountId, parsed.data.id);
   if (!trace) notFound();
-  const { detail, steps } = trace;
+  const { detail, steps, replay } = trace;
 
   const { transaction: t, ledgerEntries, holds, related, external } = detail;
   const cardHold = holds.find((hold) => hold.kind === "CARD_AUTHORIZATION");
@@ -120,9 +124,21 @@ export default async function TransactionPage({ params }: { params: Promise<{ id
   const netLedgerCents = steps.reduce((sum, step) => sum + step.ledgerDeltaCents, 0);
   const heldNowCents = holds.filter((hold) => hold.status === "ACTIVE").reduce((sum, hold) => sum + hold.amountCents, 0);
   const lastStep = steps.at(-1);
+  const playerSteps: PlayerStep[] = replay.steps.map((step) => ({
+    id: step.event.id,
+    seq: step.event.seq,
+    ...describeStep(step.event, t.type),
+    effect: EFFECT_COPY[step.explanation],
+    before: { ledgerCents: step.before.ledgerCents, availableCents: step.before.availableCents },
+    after: { ledgerCents: step.after.ledgerCents, availableCents: step.after.availableCents },
+    otherActivity: step.otherActivity,
+    matches: step.matches,
+  }));
+  const divergence = replay.divergence;
 
   return (
     <div className="space-y-5">
+      <OpenTargetDetails />
       <Link href="/activity" className="text-sm text-neutral-600 hover:text-neutral-900">
         ← Activity
       </Link>
@@ -190,9 +206,45 @@ export default async function TransactionPage({ params }: { params: Promise<{ id
             )}
           </Panel>
 
-          {/* SLOT — Replay and money graph (next branch). Renders from GET /api/transactions/:id/replay; nothing here until it lands. */}
-          <section id="replay" className="rounded-md border border-dashed border-neutral-300 px-4 py-3 text-sm text-neutral-500">
-            Replay and the money graph will appear here.
+          <section id="replay" className="scroll-mt-4 space-y-5">
+            <Panel
+              title="Replay"
+              aside={
+                replay.consistent ? (
+                  <Tag tone="emerald">Replay matches recorded balances</Tag>
+                ) : (
+                  <span className="inline-flex items-center rounded bg-red-50 px-1.5 py-0.5 text-xs font-medium text-red-800 ring-1 ring-inset ring-red-200">
+                    Mismatch at step {divergence ? divergence.stepIndex + 1 : "?"}
+                  </span>
+                )
+              }
+            >
+              {!replay.consistent && divergence && (
+                <p role="alert" className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                  {divergence.reason === "ledger_entry" ? (
+                    <>The ledger change recorded at step {divergence.stepIndex + 1} doesn&apos;t match the ledger entry it posted.</>
+                  ) : (
+                    <>
+                      Replaying this money trace doesn&apos;t reproduce the balances recorded at step {divergence.stepIndex + 1}: replay gives ledger{" "}
+                      <Money cents={divergence.replayed.ledgerCents} /> / available <Money cents={divergence.replayed.availableCents} />, the record says{" "}
+                      <Money cents={divergence.recorded.ledgerCents} /> / <Money cents={divergence.recorded.availableCents} />.
+                    </>
+                  )}
+                </p>
+              )}
+              {steps.length === 0 ? (
+                <p className="text-sm text-neutral-600">Nothing to replay yet.</p>
+              ) : (
+                <ReplayPlayer
+                  initial={{ ledgerCents: replay.initial.ledgerCents, availableCents: replay.initial.availableCents }}
+                  steps={playerSteps}
+                  why={whyFinalBalance(replay)}
+                />
+              )}
+            </Panel>
+            <Panel title="Money graph" aside={<span className="text-xs text-neutral-500">what caused what</span>}>
+              <MoneyGraph graph={replay.graph} type={t.type} />
+            </Panel>
           </section>
         </div>
 
@@ -221,7 +273,7 @@ export default async function TransactionPage({ params }: { params: Promise<{ id
             ) : (
               <ul className="divide-y divide-neutral-100 text-sm">
                 {ledgerEntries.map((entry) => (
-                  <li key={entry.id} className="py-2 first:pt-0 last:pb-0">
+                  <li key={entry.id} id={`ledger-${entry.id}`} className="scroll-mt-4 py-2 first:pt-0 last:pb-0 target:bg-amber-50/60">
                     <div className="flex items-baseline justify-between gap-3">
                       <span>{ENTRY_LABELS[entry.entryType]}</span>
                       <Money cents={entry.amountCents} signed />
@@ -245,7 +297,7 @@ export default async function TransactionPage({ params }: { params: Promise<{ id
             {external.events.length > 0 && (
               <ul className="mt-3 divide-y divide-neutral-100 border-t border-neutral-100 text-xs">
                 {external.events.map((event) => (
-                  <li key={event.id} className="py-2">
+                  <li key={event.id} id={`event-${event.id}`} className="scroll-mt-4 py-2 target:bg-amber-50/60">
                     <span className="text-neutral-600">
                       Update from {providerLabel(event.provider)} · <LocalTime value={event.receivedAt} />
                     </span>
