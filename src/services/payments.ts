@@ -1,11 +1,16 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
+import { z } from "zod";
 import { withTransaction, type Db, type Tx } from "../db/client";
-import { accounts, holds, payments, transactions } from "../db/schema";
-import type { PaymentStatus } from "../domain/payments";
+import { accounts, externalEvents, holds, payments, transactionEvents, transactions } from "../db/schema";
+import { ENTRY_TYPE_FOR_TRANSACTION } from "../domain/ledger";
+import { planPaymentActions, type PaymentStatus } from "../domain/payments";
+import type { ProviderTransfer } from "../integrations/transfer-provider";
+import { PermanentEventError } from "../lib/errors";
 import type { Logger } from "../lib/logger";
 import { accountAvailableCents, lockAccount } from "./accounts";
 import { IdempotencyConflictError, requestHash } from "./funding";
 import { transitionHold } from "./holds";
+import { postLedgerEntry } from "./ledger";
 import { appendTraceEvent } from "./trace";
 
 export type Payment = typeof payments.$inferSelect;
@@ -26,6 +31,30 @@ export class AccountNotLinkedError extends Error {
   constructor(accountId: string) {
     super(`account ${accountId} is not linked to a provider account`);
     this.name = "AccountNotLinkedError";
+  }
+}
+
+/** The transfer carries no idempotency key of ours and matches no payment: we didn't create it. Permanent. */
+export class PaymentNotOursError extends PermanentEventError {
+  constructor(provider: string, transferId: string) {
+    super(`${provider} transfer ${transferId} has no Trace payment idempotency key and matches no payment`);
+    this.name = "PaymentNotOursError";
+  }
+}
+
+/** The transfer's idempotency key names a payment that isn't there (yet). Retryable. */
+export class PaymentNotFoundError extends Error {
+  constructor(provider: string, transferId: string, paymentId: string) {
+    super(`No payment ${paymentId} for ${provider} transfer ${transferId}`);
+    this.name = "PaymentNotFoundError";
+  }
+}
+
+/** The provider's transfer contradicts our payment (another transfer, amount, currency, or state). Permanent: Ops decides. */
+export class PaymentTransferMismatchError extends PermanentEventError {
+  constructor(message: string) {
+    super(message);
+    this.name = "PaymentTransferMismatchError";
   }
 }
 
@@ -237,4 +266,166 @@ export async function outboxBacklog(db: Db): Promise<{ pending: number; oldestAg
     .from(payments)
     .where(eq(payments.status, "PENDING"));
   return row;
+}
+
+export interface AchTransferInput {
+  /** Our external_events id of the event being processed. */
+  eventId: string;
+  provider: string;
+  /** The transfer as fetched from the provider's API, not the webhook payload. */
+  transfer: ProviderTransfer;
+}
+
+const PAYMENT_KEY = /^payment-(.+)$/;
+
+/**
+ * Applies an outbound transfer's state inside the event's processing transaction. The fetched
+ * transfer holds every step so far, so under the account and payment locks this compares it with
+ * what we already applied (status, the SUBMITTED_TO_NETWORK trace row, a PAYMENT_RETURN for the
+ * transfer) and applies only the new steps, in order (domain `planPaymentActions`):
+ *
+ * - accepted while we still have it PENDING (the submitter crashed before storing the id) →
+ *   SUBMITTED, linked by our idempotency key;
+ * - sent to the network → SUBMITTED_TO_NETWORK trace row;
+ * - settled → COMPLETED: PAYMENT_DEBIT and hold release in one postLedgerEntry, so the trace reads
+ *   ledger −amount with available unchanged (the hold had already reserved it);
+ * - returned before settling → RETURNED: hold released, nothing posted;
+ * - returned after completing → a new PAYMENT_RETURN (keyed by transfer id + type, linked to the
+ *   payment) crediting the ledger; the payment stays COMPLETED;
+ * - rejected/canceled by the provider → FAILED, hold released.
+ *
+ * A duplicate or older snapshot is a no-op. Retryable throws: the payment named by our key isn't
+ * there. Permanent throws: not ours, a different transfer, amount or currency, or a state that
+ * contradicts ours (e.g. a live transfer for a payment we gave up on).
+ */
+export async function applyAchTransfer(tx: Tx, input: AchTransferInput, logger: Logger): Promise<void> {
+  const { transfer, provider, eventId } = input;
+  const log = logger.child({ event_id: eventId, provider_object_id: transfer.id, provider_status: transfer.status });
+  const found = await findPayment(tx, provider, transfer);
+
+  await lockAccount(tx, found.accountId);
+  let payment = await lockPayment(tx, found.id);
+  const txLog = log.child({ account_id: payment.accountId, payment_id: payment.id, transaction_id: payment.transactionId });
+  if (payment.providerObjectId !== null && payment.providerObjectId !== transfer.id) {
+    throw new PaymentTransferMismatchError(`payment ${payment.id} tracks transfer ${payment.providerObjectId}, not ${transfer.id}`);
+  }
+  if (transfer.currency !== payment.currency || transfer.amountCents !== payment.amountCents) {
+    throw new PaymentTransferMismatchError(
+      `transfer ${transfer.id} is ${transfer.amountCents} ${transfer.currency}, payment ${payment.id} is ${payment.amountCents} ${payment.currency}`,
+    );
+  }
+  const [network] = await tx
+    .select({ id: transactionEvents.id })
+    .from(transactionEvents)
+    .where(and(eq(transactionEvents.transactionId, payment.transactionId), eq(transactionEvents.kind, "SUBMITTED_TO_NETWORK")))
+    .limit(1);
+  const [recordedReturn] = await tx
+    .select({ id: transactions.id })
+    .from(transactions)
+    .where(and(eq(transactions.provider, provider), eq(transactions.providerObjectId, transfer.id), eq(transactions.type, "PAYMENT_RETURN")));
+  const plan = planPaymentActions(
+    { status: payment.status, networkSubmissionRecorded: network !== undefined, returnRecorded: recordedReturn !== undefined },
+    transfer.snapshot,
+  );
+  if ("conflict" in plan) throw new PaymentTransferMismatchError(`payment ${payment.id}, transfer ${transfer.id}: ${plan.conflict}`);
+
+  let linkTo = payment.transactionId;
+  for (const action of plan.actions) {
+    const step = { eventId, providerRef: transfer.id };
+    if (action.kind === "ACCEPT") {
+      payment = await markPaymentSubmitted(tx, payment, transfer.id, step);
+      txLog.warn({ outcome: "linked_by_idempotency_key" }, "transfer id was never stored by the submitter; linked from its idempotency key");
+    } else if (action.kind === "NETWORK_SUBMITTED") {
+      await appendTraceEvent(tx, { accountId: payment.accountId, transactionId: payment.transactionId, kind: "SUBMITTED_TO_NETWORK", externalEventId: eventId, providerRef: transfer.id });
+    } else if (action.kind === "COMPLETE") {
+      await postLedgerEntry(
+        tx,
+        {
+          accountId: payment.accountId,
+          transactionId: payment.transactionId,
+          entryType: ENTRY_TYPE_FOR_TRANSACTION.OUTBOUND_PAYMENT,
+          amountCents: -payment.amountCents,
+          externalEventId: eventId,
+          providerRef: transfer.id,
+          releaseHoldForTransactionId: payment.transactionId,
+        },
+        txLog,
+      );
+      payment = await setPaymentStatus(tx, payment, "COMPLETED", step);
+    } else if (action.kind === "RETURN_BEFORE_COMPLETION") {
+      const returnStep = { eventId, providerRef: action.returnId };
+      await transitionHold(tx, { accountId: payment.accountId, transactionId: payment.transactionId, event: "RELEASE", externalEventId: eventId, providerRef: action.returnId });
+      payment = await setPaymentStatus(tx, payment, "RETURNED", returnStep);
+    } else if (action.kind === "RETURN_AFTER_COMPLETION") {
+      linkTo = (await recordReturn(tx, payment, { ...input, returnId: action.returnId }, txLog)) ?? linkTo;
+    } else {
+      payment = await failPayment(tx, payment, { ...step, error: `provider ${transfer.status} the transfer` });
+    }
+    txLog.info({ outcome: "applied", step: action.kind, status: payment.status, reason: "reason" in action ? action.reason : undefined }, "payment step applied");
+  }
+
+  await tx.update(externalEvents).set({ transactionId: linkTo }).where(eq(externalEvents.id, eventId));
+  txLog.info(
+    { outcome: plan.actions.length ? "applied" : "no_new_steps", applied_steps: plan.actions.length, status: payment.status },
+    plan.actions.length ? "transfer applied" : "transfer has no new steps; no effect",
+  );
+}
+
+/** Money back after completion: a new PAYMENT_RETURN crediting the ledger. Returns its id, or null if already recorded. */
+async function recordReturn(tx: Tx, payment: Payment, input: AchTransferInput & { returnId: string }, log: Logger): Promise<string | null> {
+  const [returned] = await tx
+    .insert(transactions)
+    .values({
+      accountId: payment.accountId,
+      type: "PAYMENT_RETURN",
+      status: "COMPLETED",
+      amountCents: payment.amountCents,
+      provider: input.provider,
+      providerObjectId: input.transfer.id,
+      relatedTransactionId: payment.transactionId,
+      counterparty: payment.recipient,
+    })
+    .onConflictDoNothing({ target: [transactions.provider, transactions.providerObjectId, transactions.type] })
+    .returning({ id: transactions.id });
+  if (!returned) return null;
+  await postLedgerEntry(
+    tx,
+    {
+      accountId: payment.accountId,
+      transactionId: returned.id,
+      entryType: ENTRY_TYPE_FOR_TRANSACTION.PAYMENT_RETURN,
+      amountCents: payment.amountCents,
+      externalEventId: input.eventId,
+      providerRef: input.returnId,
+    },
+    log,
+  );
+  await appendTraceEvent(tx, {
+    accountId: payment.accountId,
+    transactionId: returned.id,
+    kind: "STATUS_CHANGED",
+    amountCents: payment.amountCents,
+    toStatus: "COMPLETED",
+    externalEventId: input.eventId,
+    providerRef: input.returnId,
+  });
+  log.warn({ outcome: "returned_after_completion", return_transaction_id: returned.id }, "completed payment returned; credited as a PAYMENT_RETURN");
+  return returned.id;
+}
+
+/**
+ * The payment for `transfer`: by provider_object_id, else by the payment id in our idempotency
+ * key (`payment-<id>`, which Increase stores on the transfer) when the submitter never stored the
+ * id. Reads only; the caller locks account, then payment.
+ */
+async function findPayment(tx: Tx, provider: string, transfer: ProviderTransfer): Promise<{ id: string; accountId: string }> {
+  const columns = { id: payments.id, accountId: payments.accountId };
+  const [byTransferId] = await tx.select(columns).from(payments).where(and(eq(payments.provider, provider), eq(payments.providerObjectId, transfer.id)));
+  if (byTransferId) return byTransferId;
+
+  const paymentId = z.uuid().safeParse(PAYMENT_KEY.exec(transfer.idempotencyKey ?? "")?.[1]);
+  if (!paymentId.success) throw new PaymentNotOursError(provider, transfer.id);
+  const [byKey] = await tx.select(columns).from(payments).where(and(eq(payments.id, paymentId.data), eq(payments.provider, provider)));
+  if (!byKey) throw new PaymentNotFoundError(provider, transfer.id, paymentId.data);
+  return byKey;
 }

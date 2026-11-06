@@ -3,7 +3,7 @@ import type { externalEvents } from "../db/schema";
 import { INCREASE_IGNORED_EVENT_TYPES, INCREASE_PROVIDER } from "../integrations/increase";
 import { STRIPE_IGNORED_EVENT_TYPES, STRIPE_PROVIDER } from "../integrations/stripe";
 import type { Logger } from "../lib/logger";
-import { configuredIncrease, increaseHandlers } from "./increase";
+import { configuredIncrease, increaseHandlers, increaseTransferHandlers } from "./increase";
 import { configuredStripe, stripeHandlers } from "./stripe";
 
 export type ExternalEvent = typeof externalEvents.$inferSelect;
@@ -44,6 +44,7 @@ export const routing: EventRouting = {
   handlers: {
     ...forProvider(STRIPE_PROVIDER, stripeHandlers(configuredStripe)),
     ...forProvider(INCREASE_PROVIDER, increaseHandlers(configuredIncrease)),
+    ...forProvider(INCREASE_PROVIDER, increaseTransferHandlers(configuredIncrease)),
   },
   ignored: { [STRIPE_PROVIDER]: STRIPE_IGNORED_EVENT_TYPES, [INCREASE_PROVIDER]: INCREASE_IGNORED_EVENT_TYPES },
 };
