@@ -840,3 +840,102 @@ An `INCREASE_ACCOUNT_ID` env var; looking up the card's account on every submiss
 **Tradeoff**
 A database whose card was linked before this change needs `npm run increase:bootstrap` re-run once
 (it only links the account).
+
+## 2026-11-07 — Outcome counters: buffered per process, summed in a Postgres table
+
+**Decision**
+`countOutcome(name, labels)` adds to an in-process buffer. Every 5 s each process adds its buffer to
+`metric_counters (name, labels jsonb, value)`, primary key `(name, labels)`, with one
+`INSERT … ON CONFLICT DO UPDATE value = value + excluded.value`. The flush runs outside every
+business transaction. Rows go in key order, so two processes flushing at once can't deadlock. A
+failed flush logs, keeps the counts and tries again next time. Counts made inside the worker's
+processing transaction (funding and card outcomes) are held in an `AsyncLocalStorage` scope and
+kept only if that transaction commits, so a rolled-back and retried event isn't counted twice.
+The buffer lives on `globalThis`, because Next gives route handlers and pages separate copies of
+the module. State numbers (events by status, payment backlog) come from the tables at read time.
+`GET /api/ops/metrics` returns JSON only.
+
+**Why**
+Web and worker are separate processes, and one endpoint has to show both. Postgres is already the
+only infrastructure. Buffering keeps counter writes off the hot path: a counter write can never fail
+or slow the work it counts, and it never contends on a hot row inside a money transaction. Counting
+state from the tables can't drift.
+
+**Alternatives**
+In-process counters scraped per process (needs a Prometheus server and service discovery); a
+counter row written inside each business transaction (serialises every transaction on one row and
+fails the work when it fails); deriving every outcome from logs.
+
+**Tradeoff**
+Counters lag by up to 5 s, and a process that crashes loses its unflushed counts (at most 5 s
+worth). `jsonb` labels mean a typo creates a new series; label values must come from fixed sets.
+There is no Prometheus text format.
+
+## 2026-11-07 — Ops retry works only from FAILED
+
+**Decision**
+`POST /api/ops/events/:id/retry` locks the event row. If the event is `FAILED`, it sets `RETRY`
+with `attempts = 0`, `claim_token + 1` and `next_attempt_at = now()`, and writes an `event.retry`
+audit event in the same transaction. Any other status is 409 `event_not_retryable` and changes
+nothing. That includes a second click and the loser of a concurrent retry, which waits on the lock
+and then sees `RETRY`. `IGNORED` is not retryable. `last_error` is kept until the event is processed.
+
+**Why**
+`FAILED` is the only status that needs a person: retry budget spent, or a permanent error. An
+`IGNORED` type is on the provider's ignore list, so a retry would just ignore it again. If we start
+handling that type, that's a code change, and its events should be replayed deliberately, not one
+click at a time. `RECEIVED`, `RETRY` and `PROCESSING` are already queued or being processed;
+resetting their budget would only hide a loop.
+
+**Alternatives**
+Also allowing `IGNORED`; an idempotent 200 for a second retry (it would hide that someone else
+already acted).
+
+**Tradeoff**
+To reprocess an ignored event after its type gains a handler, someone has to run a script.
+
+## 2026-11-07 — Ops event viewer: metadata only, keyset by received time
+
+**Decision**
+`GET /api/ops/events` and `/:id` never select `external_events.payload`; the API returns
+`payload: "withheld"` and the page says so. The list shows provider, type, external id, status,
+attempts, next attempt, the stored (sanitized) last error, delivery count, received and processed
+times, and linked transaction ids (`external_events.transaction_id` plus the transactions of the
+trace rows the event wrote). It is keyset-paginated on `(received_at, id)` with the same opaque
+cursor as the transaction list. The detail adds deliveries (time, duplicate or not), the trace
+steps the event wrote, the transactions touched and the Ops audit trail, all from one snapshot.
+New indexes: `external_events (received_at, id)`, `(status, received_at, id)` and
+`transaction_events (external_event_id)`.
+
+**Why**
+Payloads can hold personal data, and the worker never trusts them anyway (it re-fetches from the
+provider). The status filter is the Ops path that matters (FAILED), so it gets its own index.
+
+**Alternatives**
+A redacted payload view (needs a per-provider allowlist of safe fields); OFFSET pagination.
+
+**Tradeoff**
+Filtering by provider or type alone walks the received-time index, which is fine at sandbox volume.
+Add `(provider, event_type, received_at, id)` if that becomes a hot path. Ops has no transaction
+page yet, so the transactions touched are listed by id, type, status and amount, without links.
+
+## 2026-11-07 — Audit trail: one writer, inside the action's transaction
+
+**Decision**
+`recordAudit(tx, …)` (`services/audit.ts`) is the only writer of `audit_events`. It takes the
+action's own transaction, so the audit row commits if and only if the action does. It records the
+actor (user id, or SYSTEM), action, entity type and id, previous and new state, and the request's
+correlation id (new `NOT NULL` column). State is typed as flat scalars, so a payload or a person's
+details can't be passed in whole. Indexed by `(entity_type, entity_id, created_at)` and
+`(created_at)`.
+
+**Why**
+An audit row written after commit can be lost, and one written before commit can describe
+something that never happened. The correlation id joins the audit row to the request's log lines.
+
+**Alternatives**
+Writing audit rows asynchronously (the playbook rule for auxiliary work). An audit trail is part
+of the action here, not auxiliary to it.
+
+**Tradeoff**
+A failing audit insert fails the Ops action. That's intended.
