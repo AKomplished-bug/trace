@@ -872,8 +872,13 @@ fails the work when it fails); deriving every outcome from logs.
 
 **Tradeoff**
 Counters lag by up to 5 s, and a process that crashes loses its unflushed counts (at most 5 s
-worth). `jsonb` labels mean a typo creates a new series; label values must come from fixed sets.
+worth). Only the worker flushes once more on a clean stop (SIGTERM/SIGINT), after its loop. The web
+process has no shutdown flush, so it can lose up to 5 s of counts on every deploy: Next drains
+in-flight requests and exits itself, and a flush racing that exit never landed in testing.
+`jsonb` labels mean a typo creates a new series; label values must come from fixed sets.
 There is no Prometheus text format.
+Counters are at-least-once per flush (a flush whose commit succeeds but whose answer is lost is
+re-buffered and added again), so they are approximate: use them for rates and alerts, never for money.
 
 ## 2026-11-07 — Ops retry works only from FAILED
 

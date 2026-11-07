@@ -201,7 +201,8 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
   (`services/metrics.ts`) only. It buffers in process (no I/O, never throws); each process
   (`apiDeps()` in web, the worker loop) flushes every 5 s to `metric_counters` with
   `INSERT … ON CONFLICT DO UPDATE value = value + n`, outside business transactions, and keeps the
-  counts on a failed flush. Counts made inside the worker's processing transaction are kept only
+  counts on a failed flush. Only the worker flushes on shutdown; the web process can lose up to
+  5 s of counts (Next drains requests itself). Counts made inside the worker's processing transaction are kept only
   if it commits (`countAfterCommit`). Label values come from fixed sets, never ids or raw input.
   Wired: `events_processed_total{provider,type,outcome}`, `webhooks_received_total{provider,outcome}`,
   `funding_requests_total{outcome}`, `funding_outcomes_total{outcome}`,
