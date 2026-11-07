@@ -1457,3 +1457,75 @@ operator would need a hashing tool; the seed already has one).
 **Tradeoff**
 Rotation is two steps (put a new secret value, then `run-task.sh seed`), and the plaintext lives in
 Secrets Manager and in a local file as well as being hashed in the database.
+
+## 2026-11-07 — Request latency is a bucket histogram in the outcome counters
+
+**Decision**
+`withRequestLog` measures each API request with `performance.now()` and records it three ways:
+`duration_ms` on the "request handled" line, a `Server-Timing: app;dur=<ms>` response header, and
+cumulative counters `http_request_duration_ms_bucket{route,le}` (fixed bounds 5 … 2500 ms and +Inf),
+`_count` and `_sum` through `countOutcome`. `/api/ops/metrics` and `/ops` estimate p50/p95 per route
+from the buckets, interpolating linearly inside a bucket as Prometheus's `histogram_quantile` does.
+
+**Why**
+The ALB's p50/p90 can't be broken down by route and the logs had no duration. The counter store
+already buffers in process and flushes every 5 s, so a histogram costs twelve rows per route and no
+new infrastructure; it can't fail or slow a request. Fixed buckets add across processes and
+restarts, which raw samples or per-process percentiles don't.
+
+**Alternatives**
+Percentiles from the logs (CloudWatch Logs Insights: no dashboard, per query); a samples table
+(grows with traffic, needs pruning); CloudWatch EMF or an APM agent (new infrastructure).
+
+**Tradeoff**
+Percentiles are estimates within a bucket: one 148 ms request reads as p50 175 ms (inside 100–250).
+Anything above 2500 ms reads as 2500 ms, with "> 2500 ms" in the slowest column. Counts since the
+table was created, not a moving window. Time runs from the handler's start to the built Response, so
+middleware, page renders and webhooks aren't timed (Next has no cheap central hook for page renders).
+
+## 2026-11-07 — CloudFront caches only /_next/static/*
+
+**Decision**
+One cache behaviour, `/_next/static/*` with the managed CachingOptimized policy, GET/HEAD only,
+compressed, and no origin request policy. The default behaviour stays CachingDisabled with every viewer
+header forwarded. Bootstrap adds the behaviour to the distribution config it reads (ETag, file, no
+values on argv) only when no behaviour has that path, so a second run changes nothing.
+
+**Why**
+Files under `/_next/static` are content-hashed per build and Next serves them with
+`Cache-Control: public, max-age=31536000, immutable`, so a cached copy can never be stale and no
+cookie or header affects them. Pages and the API are per-user and must keep reaching the origin.
+There is no `public/` folder and no favicon, so there are no other static files to cache.
+
+**Alternatives**
+Caching more paths (pages are personalised; not safe); a separate S3 origin for static assets (a
+second deploy step for the same result).
+
+**Tradeoff**
+During a rolling deploy an edge can briefly get a 404 for a new hash from an old task; that 404 is
+cached for CloudFront's error minimum TTL (10 s by default) unless Next marks it no-store.
+
+## 2026-11-07 — Sydney only, so UK reviewers pay ~270 ms per round trip
+
+**Decision**
+Keep everything in ap-southeast-2 (the only region the account allows) and make the split
+between app time and network time visible: `Server-Timing` per request, the Ops latency table per
+route.
+
+**Why**
+The app answers at p50 9 ms and p90 140 ms (ALB), but a full request from the UK takes about
+1–1.5 s: every uncached request, including each static asset until now, crosses London↔Sydney
+(~270 ms RTT), plus another round trip when CloudFront opens a new connection to the ALB (its
+keep-alive is 5 s). Moving the app isn't allowed, so the useful work
+is to stop the round trips that don't need to happen (static assets now come from a London edge
+after the first fetch) and to show reviewers where the remaining time goes.
+
+**Alternatives**
+A second region or a UK read replica (not allowed in the account); caching API responses at the edge
+(per-user money data; not safe).
+
+**Tradeoff**
+UK reviewers should expect each page or API call to take roughly 300 ms–1.5 s, nearly all of it
+network; `Server-Timing` shows the app's share (locally most routes take under 50 ms; login about
+150 ms, which is scrypt).
+Static assets are fast after the first load from each edge.

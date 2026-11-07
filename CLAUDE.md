@@ -268,6 +268,13 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
   `reconciliation_foreign_records_total{provider}`, `investigation_actions_total{action,outcome}`,
   `auth_logins_total{outcome}` (success, wrong_password, unknown_user, no_password, throttled, …),
   `login_throttle_prunes_total{outcome}`, `login_throttle_rows_pruned_total`.
+- Request latency: `withRequestLog` times every API request (`performance.now()`, whole ms): `duration_ms`
+  on its log line, a `Server-Timing: app;dur=<ms>` header, and a histogram in the same counters
+  (`services/latency.ts`): `http_request_duration_ms_bucket{route,le}` (cumulative; le 5, 10, 25, 50,
+  100, 250, 500, 1000, 2500, +Inf), `_count{route}`, `_sum{route}`. `route` is the fixed name passed
+  to `withRequestLog`, never a path. `GET /api/ops/metrics` returns it as `latency` (per route, p50/p95
+  estimated from the buckets) rather than in `counters`; `/ops` shows "API latency (server side)". Page
+  renders and webhooks don't go through `withRequestLog` and aren't timed.
 - State is counted from the tables, not counters: events by status and the payment backlog
   (`given_up_payments` …). `GET /api/ops/metrics` (OPS, JSON) returns both; `/ops` shows them.
 
