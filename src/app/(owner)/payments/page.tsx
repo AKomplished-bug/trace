@@ -1,12 +1,17 @@
+import { Check } from "lucide-react";
 import Link from "next/link";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import { apiDeps } from "../../api/deps";
 import { listPayments, type PaymentSummary } from "../../../services/payment-queries";
+import { amountView, isInFlight, maskedAccount } from "../../_components/labels";
 import { LocalTime } from "../../_components/local-time";
+import { EmptyState, PageHeader } from "../../_components/page-parts";
+import { SendPaymentDialog } from "../../_components/send-payment-dialog";
 import { StatusBadge, Tag } from "../../_components/status-badge";
 import { TransactionAmount } from "../../_components/transaction-amount";
 import { requirePageSession } from "../../_lib/auth";
 import { PAGE_SIZE } from "../../_lib/schemas";
-import { SendPaymentForm } from "./send-payment-form";
 
 export const metadata = { title: "Payments · Trace" };
 
@@ -30,17 +35,19 @@ function lifecycle(p: Pick<PaymentSummary, "status" | "providerObjectId">): Arra
 }
 
 function Lifecycle({ payment }: { payment: Pick<PaymentSummary, "status" | "providerObjectId"> }) {
+  const steps = lifecycle(payment);
   return (
-    <ol className="flex flex-wrap items-center gap-1 text-[11px]">
-      {lifecycle(payment).map(({ step, done }, i) => {
-        const tone = step === "FAILED" ? "text-red-700" : step === "RETURNED" ? "text-neutral-700" : done ? "text-emerald-700" : "text-neutral-400";
-        return (
-          <li key={step} className={`flex items-center gap-1 ${tone}`}>
-            {i > 0 && <span aria-hidden className="text-neutral-300">→</span>}
-            <span className={done ? "font-medium" : ""}>{STEP_LABELS[step]}</span>
-          </li>
-        );
-      })}
+    <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs" aria-label="Lifecycle">
+      {steps.map(({ step, done }, i) => (
+        <li key={step} className={cn("flex items-center gap-1.5", done ? "text-foreground" : "text-muted-foreground")}>
+          {i > 0 && <span aria-hidden className={cn("h-px w-3", done ? "bg-foreground/40" : "bg-border")} />}
+          {done ? <Check aria-hidden className="size-3" /> : <span aria-hidden className="size-2 rounded-full border border-current" />}
+          <span className={done ? "font-medium" : ""}>
+            {STEP_LABELS[step]}
+            {!done && <span className="sr-only"> (not yet)</span>}
+          </span>
+        </li>
+      ))}
     </ol>
   );
 }
@@ -51,69 +58,77 @@ export default async function PaymentsPage() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">Payments</h1>
-        <p className="text-sm text-neutral-600">
-          Send money to another bank account by ACH. The amount is reserved from your available balance at once and leaves your ledger
-          when the payment completes.
-        </p>
-      </div>
-
-      <section className="rounded-md border border-neutral-200 bg-white p-5">
-        <h2 className="mb-3 text-sm font-semibold">Send payment</h2>
-        <SendPaymentForm />
-      </section>
+      <PageHeader
+        title="Payments"
+        description="ACH payments to other bank accounts. The amount is reserved from your available balance at once and leaves your ledger when the payment completes."
+        actions={<SendPaymentDialog />}
+      />
 
       {page.items.length === 0 ? (
-        <div className="rounded-md border border-dashed border-neutral-300 bg-white px-5 py-10 text-center text-sm text-neutral-600">
-          No payments yet. Payments you send appear here with their status and lifecycle.
-        </div>
+        <EmptyState title="No payments yet" action={<SendPaymentDialog variant="outline" />}>
+          Payments you send appear here with their status and each step of their lifecycle.
+        </EmptyState>
       ) : (
-        <div className="overflow-hidden rounded-md border border-neutral-200 bg-white">
-          <table className="w-full text-sm">
-            <thead className="border-b border-neutral-200 bg-neutral-50 text-left text-xs text-neutral-500">
-              <tr>
-                <th className="px-4 py-2 font-medium">Recipient</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="hidden px-4 py-2 font-medium md:table-cell">External reference</th>
-                <th className="px-4 py-2 text-right font-medium">Amount</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-100">
-              {page.items.map((p) => (
-                <tr key={p.id} className="group relative align-top hover:bg-neutral-50">
-                  <td className="px-4 py-2.5">
-                    <Link href={`/transactions/${p.transactionId}`} className="font-medium after:absolute after:inset-0">
-                      {p.recipientName}
-                    </Link>
-                    <span className="block text-xs text-neutral-500">
-                      <span className="font-mono">•••• {p.accountNumberLast4}</span>
-                      {p.description && ` · ${p.description}`}
-                      {" · "}
-                      <LocalTime value={p.createdAt} />
-                    </span>
-                  </td>
-                  <td className="space-y-1 px-4 py-2.5">
-                    <span className="flex flex-wrap items-center gap-1">
-                      <StatusBadge status={p.status} />
-                      {p.returnTransactionId && <Tag>returned after completion</Tag>}
-                    </span>
-                    <Lifecycle payment={p} />
-                  </td>
-                  <td className="hidden px-4 py-2.5 md:table-cell">
-                    {p.providerObjectId ? (
-                      <code className="break-all font-mono text-xs text-neutral-700">{p.providerObjectId}</code>
-                    ) : (
-                      <span className="text-xs text-neutral-400">not sent yet</span>
-                    )}
-                  </td>
-                  <td className="whitespace-nowrap px-4 py-2.5 text-right">
-                    <TransactionAmount t={p} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="overflow-hidden rounded-xl border bg-card">
+          <Table>
+            <caption className="sr-only">Payments, newest first</caption>
+            <TableHeader className="bg-muted/50">
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="px-4 text-xs text-muted-foreground">Recipient</TableHead>
+                <TableHead className="px-4 text-xs text-muted-foreground">Status</TableHead>
+                <TableHead className="hidden px-4 text-xs text-muted-foreground lg:table-cell">External reference</TableHead>
+                <TableHead className="px-4 text-right text-xs text-muted-foreground">Amount</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {page.items.map((p) => {
+                const pending = isInFlight(amountView(p));
+                return (
+                  <TableRow
+                    key={p.id}
+                    className={cn("relative align-top", pending && "bg-pending-soft/45 shadow-[inset_3px_0_0_var(--pending-line)] hover:bg-pending-soft/70")}
+                  >
+                    <TableCell className="px-4 py-3 whitespace-normal">
+                      <Link
+                        href={`/transactions/${p.transactionId}`}
+                        className="font-medium outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
+                      >
+                        {p.recipientName}
+                      </Link>
+                      <span className="block text-xs text-muted-foreground">
+                        <span className="tabular-nums">
+                          <span className="sr-only">Account ending </span>
+                          <span aria-hidden>{maskedAccount(p.accountNumberLast4)}</span>
+                          <span className="sr-only">{p.accountNumberLast4}</span>
+                        </span>
+                        {p.description && `, ${p.description}`}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        <LocalTime value={p.createdAt} />
+                      </span>
+                    </TableCell>
+                    <TableCell className="space-y-1.5 px-4 py-3 whitespace-normal">
+                      <span className="flex flex-wrap items-center gap-1">
+                        <StatusBadge status={p.status} />
+                        {p.returnTransactionId && <Tag>Returned after completion</Tag>}
+                      </span>
+                      <Lifecycle payment={p} />
+                    </TableCell>
+                    <TableCell className="hidden px-4 py-3 lg:table-cell">
+                      {p.providerObjectId ? (
+                        <code className="font-mono text-xs text-foreground/80">{p.providerObjectId}</code>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Not sent yet</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="px-4 py-3 text-right font-medium">
+                      <TransactionAmount t={p} />
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
         </div>
       )}
     </div>

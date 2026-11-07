@@ -1,11 +1,11 @@
 import { z } from "zod";
 import type { Db } from "../../../db/client";
-import { isValidRoutingNumber, MAX_PAYMENT_CENTS } from "../../../domain/payments";
 import { formatCents } from "../../../lib/money";
 import type { Logger } from "../../../lib/logger";
 import { IdempotencyConflictError } from "../../../services/funding";
 import { getPayment, listPayments } from "../../../services/payment-queries";
 import { AccountNotLinkedError, createPayment, InsufficientFundsError } from "../../../services/payments";
+import { paymentBodySchema } from "../../_lib/money-forms";
 import { PAGE_SIZE, searchParamsObject } from "../../_lib/schemas";
 import { decodeCursor } from "../../../services/transaction-queries";
 import { invalidRequest, withRequestLog, type HandlerDeps } from "../handler";
@@ -19,35 +19,7 @@ export interface PaymentDeps {
   logger: Logger;
 }
 
-// Printable ASCII: what ACH name and descriptor fields accept.
-const ascii = /^[\x20-\x7E]+$/;
-const bodySchema = z.object({
-  // Increase's individual_name limit (https://increase.com/documentation/api/ach-transfers#create-an-ach-transfer).
-  recipientName: z
-    .string({ error: "must be the recipient's name" })
-    .trim()
-    .min(1, "must not be empty")
-    .max(22, "must be at most 22 characters")
-    .regex(ascii, "must use plain letters, digits and punctuation"),
-  accountNumber: z.string({ error: "must be the recipient's account number" }).trim().regex(/^\d{4,17}$/, "must be 4 to 17 digits"),
-  routingNumber: z
-    .string({ error: "must be the recipient bank's routing number" })
-    .trim()
-    .regex(/^\d{9}$/, "must be 9 digits")
-    .refine(isValidRoutingNumber, "is not a valid ABA routing number (check digit doesn't match)"),
-  amountCents: z
-    .number({ error: "must be a number of cents" })
-    .int("must be whole cents")
-    .positive("must be positive")
-    .max(MAX_PAYMENT_CENTS, `must be at most ${MAX_PAYMENT_CENTS} ($1,000,000)`),
-  description: z
-    .string({ error: "must be text" })
-    .trim()
-    .min(1, "must not be empty when given")
-    .max(80, "must be at most 80 characters")
-    .regex(ascii, "must use plain letters, digits and punctuation")
-    .optional(),
-});
+const bodySchema = paymentBodySchema;
 const idempotencyKeySchema = z.string().trim().min(1).max(255);
 const paymentParams = z.object({ id: z.uuid("must be a payment id") });
 const listQuery = z.object({
