@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { externalEventStatus, reconciliationStatus, transactionStatus, transactionType } from "../../db/schema";
+import { externalEventStatus, investigationStatus, reconciliationStatus, transactionStatus, transactionType } from "../../db/schema";
 import { INCREASE_PROVIDER } from "../../integrations/increase";
 import { STRIPE_PROVIDER } from "../../integrations/stripe";
 import { decodeCursor } from "../../services/transaction-queries";
@@ -88,6 +88,40 @@ export const reconciliationListQuery = z.object({
 });
 
 export const runIdParams = z.object({ id: z.uuid("must be a reconciliation run id") });
+
+/** GET /api/ops/investigations and the investigations page. */
+export const investigationListQuery = z.object({
+  status: z.preprocess(blankAsUndefined, z.enum(investigationStatus.enumValues).optional()),
+});
+
+export const investigationIdParams = z.object({ id: z.uuid("must be an investigation id") });
+
+/** POST /api/ops/investigations: `{ recordId }`, a reconciliation record that isn't MATCHED. */
+export const openInvestigationBody = z.object({ recordId: z.uuid("recordId must be a reconciliation record id") });
+
+const noteText = (field: string) =>
+  z
+    .string({ error: `${field} must be text` })
+    .trim()
+    .min(1, `${field} is required`)
+    .max(2000, `${field} must be at most 2000 characters`);
+
+/** POST /api/ops/investigations/:id/notes: `{ body }`. */
+export const investigationNoteBody = z.object({ body: noteText("body") });
+
+/** Largest manual adjustment: $1,000,000, either way. */
+export const MAX_ADJUSTMENT_CENTS = 100_000_000;
+
+/** POST /api/ops/investigations/:id/resolve: `{ note, adjustmentCents? }` (signed cents: credit +, debit −). */
+export const resolveInvestigationBody = z.object({
+  note: noteText("note"),
+  adjustmentCents: z
+    .number({ error: "adjustmentCents must be a number of cents" })
+    .int("adjustmentCents must be whole cents")
+    .refine((v) => v !== 0, "adjustmentCents must not be zero; leave it out to resolve without an adjustment")
+    .refine((v) => Math.abs(v) <= MAX_ADJUSTMENT_CENTS, `adjustmentCents must be at most ${MAX_ADJUSTMENT_CENTS} either way`)
+    .optional(),
+});
 
 /** URLSearchParams → plain object; a repeated key keeps its first value. */
 export function searchParamsObject(params: URLSearchParams): Record<string, string> {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TimelineStep } from "../../services/transaction-queries";
-import { stepAmount } from "./trace-copy";
+import { describeStep, stepAmount } from "./trace-copy";
 
 const step = (kind: TimelineStep["kind"], amountCents: number | null, ledgerDeltaCents = 0) => ({ kind, amountCents, ledgerDeltaCents }) as TimelineStep;
 
@@ -15,5 +15,14 @@ describe("stepAmount", () => {
     expect(stepAmount(step("STATUS_CHANGED", 10000))).toEqual({ cents: 10000, signed: false });
     expect(stepAmount(step("HOLD_EXCEEDS_AVAILABLE", 8000))).toBeNull();
     expect(stepAmount(step("SUBMITTED_TO_NETWORK", null))).toBeNull();
+  });
+});
+
+describe("describeStep", () => {
+  it("explains an adjustment's settlement as a reviewed correction, not a bare status", () => {
+    const settled = { kind: "STATUS_CHANGED", fromStatus: null, toStatus: "SETTLED", amountCents: 1500, ledgerDeltaCents: 0 } as TimelineStep;
+    expect(describeStep(settled, "ADJUSTMENT").title).toBe("Correction posted after review");
+    expect(describeStep(settled, "ADJUSTMENT").detail).toContain("original transaction is unchanged");
+    expect(describeStep(settled, "ADJUSTMENT").title).not.toContain("Status:");
   });
 });
