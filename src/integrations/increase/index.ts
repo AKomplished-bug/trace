@@ -9,6 +9,8 @@ import {
   PaymentProviderError,
   ProviderRejectedError,
   WebhookVerificationError,
+  type EventFeed,
+  type EventPage,
   type ListResult,
   type ListWindow,
   type VerifiedWebhook,
@@ -29,6 +31,10 @@ export const INCREASE_CARD_PAYMENT_EVENTS = ["card_payment.created", "card_payme
  * thin, so the worker re-fetches the transfer.
  */
 export const INCREASE_ACH_TRANSFER_EVENTS = ["ach_transfer.created", "ach_transfer.updated"] as const;
+
+/** The categories the events poller reads: the ones with handlers. */
+export const INCREASE_POLLED_EVENT_CATEGORIES = [...INCREASE_CARD_PAYMENT_EVENTS, ...INCREASE_ACH_TRANSFER_EVENTS];
+const EVENTS_PAGE_LIMIT = 100;
 
 /**
  * Increase event categories a card flow (and the sandbox bootstrap) emits that we deliberately
@@ -188,6 +194,7 @@ export function toProviderCardPayment(payment: Increase.CardPayment, requestId: 
 export function toProviderTransfer(transfer: Increase.ACHTransfer, requestId: string | null): ProviderTransfer {
   return {
     id: transfer.id,
+    accountId: transfer.account_id,
     amountCents: transfer.amount,
     currency: transfer.currency,
     status: transfer.status,
@@ -225,7 +232,7 @@ export function toListedTransfer(transfer: Increase.ACHTransfer, requestId: stri
  * production key fails instead of moving real money. Retries are ours, so the SDK never retries.
  * Sandbox rate limit is 20 requests/s; our calls are one or two per user action or event.
  */
-export class IncreaseAdapter implements CardProvider, TransferProvider {
+export class IncreaseAdapter implements CardProvider, TransferProvider, EventFeed {
   readonly name = INCREASE_PROVIDER;
   private client: Increase | undefined;
 
@@ -242,6 +249,30 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
     const event = eventSchema.safeParse(payload);
     if (!event.success) throw new WebhookVerificationError();
     return { externalEventId: event.data.id, eventType: event.data.category, payload };
+  }
+
+  /**
+   * https://increase.com/documentation/api/events#list-events: one page (up to 100) of the
+   * categories we handle, oldest first, created at or after `since`. Each item is the Event object a
+   * webhook delivers as its body, so it is stored as the payload unchanged. `created_at` has whole
+   * seconds only. Ordered lists return a `next_cursor` even on the last page (seen live), so a page
+   * shorter than the limit is the last one.
+   */
+  async listEvents(input: { since: Date | null; cursor?: string }, signal?: AbortSignal): Promise<EventPage> {
+    const { data, requestId } = await this.call("list events", () =>
+      this.increase().events.list(
+        {
+          category: { in: INCREASE_POLLED_EVENT_CATEGORIES },
+          ...(input.since ? { created_at: { on_or_after: input.since.toISOString() } } : {}),
+          order_by: { field: "created_at", direction: "ascending" },
+          limit: EVENTS_PAGE_LIMIT,
+          cursor: input.cursor,
+        },
+        { signal },
+      ),
+    );
+    const events = data.data.map((event) => ({ externalEventId: event.id, eventType: event.category, payload: event, createdAt: new Date(event.created_at) }));
+    return { events, nextCursor: events.length < EVENTS_PAGE_LIMIT ? null : data.next_cursor, requestId };
   }
 
   async retrieveCardPayment(id: string): Promise<ListedCardPayment> {

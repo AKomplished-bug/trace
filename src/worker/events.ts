@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { withTransaction, type Db } from "../db/client";
 import { externalEvents } from "../db/schema";
-import { PermanentEventError, safeErrorForLog, safeErrorMessage } from "../lib/errors";
+import { NotOursEventError, PermanentEventError, safeErrorForLog, safeErrorMessage } from "../lib/errors";
 import type { Logger } from "../lib/logger";
 import { countAfterCommit, countOutcome } from "../services/metrics";
 import { handlerKey, type EventRouting } from "./handlers";
@@ -71,7 +71,7 @@ export async function claimNextEvent(db: Db, { leaseSeconds }: { leaseSeconds: n
   };
 }
 
-export type ProcessOutcome = "processed" | "ignored" | "retry" | "failed" | "lease_lost";
+export type ProcessOutcome = "processed" | "ignored" | "not_ours" | "retry" | "failed" | "lease_lost";
 
 class LeaseLostError extends Error {}
 
@@ -109,9 +109,9 @@ async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>, ms: numb
 
 /**
  * Processes one claimed event: `fetch` outside any transaction, then `apply` and the PROCESSED
- * mark in one transaction. Explicitly ignored types are IGNORED; types without a handler and
- * failures go to RETRY with backoff, or FAILED after MAX_ATTEMPTS — or at once for a
- * `PermanentEventError`.
+ * mark in one transaction. Explicitly ignored types, and events a handler finds aren't about our
+ * objects (`NotOursEventError`), are IGNORED; types without a handler and failures go to RETRY
+ * with backoff, or FAILED after MAX_ATTEMPTS — or at once for a `PermanentEventError`.
  */
 export async function processEvent(
   db: Db,
@@ -181,8 +181,23 @@ export async function processEvent(
       log.warn({ outcome: "lease_lost" }, "event claim lost to another worker; skipped");
       return "lease_lost";
     }
+    if (error instanceof NotOursEventError) return ignoreNotOurs(db, event, log, error);
     return fail(db, event, log, safeErrorMessage(error), error);
   }
+}
+
+/** IGNORED at once, never retried: the event is about an object that isn't ours. */
+async function ignoreNotOurs(db: Db, event: ClaimedEvent, log: Logger, error: NotOursEventError): Promise<ProcessOutcome> {
+  const reason = `not ours: ${safeErrorMessage(error)}`.slice(0, MAX_ERROR_LENGTH);
+  const updated = await db
+    .update(externalEvents)
+    .set({ status: "IGNORED", processedAt: sql`now()`, lastError: reason })
+    .where(claimed(event))
+    .returning({ id: externalEvents.id });
+  const outcome = updated.length ? "not_ours" : "lease_lost";
+  countProcessed(event, outcome);
+  log.info({ outcome, error_message: reason }, "event is about an object that isn't ours; ignored");
+  return outcome;
 }
 
 /** `events_processed_total{provider,type,outcome}`; outcome "permanent" is a FAILED from a PermanentEventError. */

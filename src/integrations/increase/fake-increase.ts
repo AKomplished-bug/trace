@@ -17,7 +17,10 @@ import { IncreaseAdapter } from ".";
  * and body → the first transfer; different body → 409 idempotency_key_already_used_error).
  * GET /card_payments and GET /ach_transfers list by `created_at.on_or_after` / `created_at.before`
  * (card payments also by `card_id`; ACH transfers by `account_id` and `idempotency_key`), newest
- * first, `limit` per page with an opaque `next_cursor`.
+ * first, `limit` per page with an opaque `next_cursor`. Card and ACH simulations and transfer
+ * creation append the `card_payment.*` / `ach_transfer.*` event Increase would emit to `events`, which
+ * GET /events lists by `category.in`, `created_at.on_or_after` and `order_by.direction` (ordered, it
+ * always returns a `next_cursor`, as Increase does).
  */
 export const INCREASE_WEBHOOK_SECRET = "increase_test_fixture_secret";
 
@@ -31,6 +34,8 @@ export interface FakeIncrease {
   cardPayments: Map<string, CardPaymentJson>;
   /** ACH transfers by id; tests may edit them to simulate Increase's view. */
   achTransfers: Map<string, AchTransferJson>;
+  /** Events in creation order (created_at in whole seconds, like Increase); tests may push their own. */
+  events: Array<Json & { id: string; category: string; created_at: string }>;
   /** Entities (`{ id, status }`), newest first as Increase lists them; none at first, like an anonymous sandbox. */
   entities: Json[];
   requests: Array<{ method: string; path: string; body: Json; idempotencyKey?: string | null }>;
@@ -48,13 +53,18 @@ const detail = (element: Json) => element[element.category as string] as Json;
 
 export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number } = {}): FakeIncrease {
   let counter = 0;
-  const fake: FakeIncrease = { adapter: undefined as unknown as IncreaseAdapter, cardPayments: new Map(), achTransfers: new Map(), entities: [], requests: [], next: "succeed" };
+  const fake: FakeIncrease = { adapter: undefined as unknown as IncreaseAdapter, cardPayments: new Map(), achTransfers: new Map(), events: [], entities: [], requests: [], next: "succeed" };
   // Idempotency-Key → the request body it was first used with and the transfer it created.
   const achKeys = new Map<string, { body: string; id: string }>();
 
   const respond = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "x-request-id": `req_fake_${++counter}` } });
   const notFound = () => respond(404, { status: 404, type: "object_not_found_error", title: "Could not find the object." });
+
+  const emit = (category: string, objectId: string) => {
+    const [objectType] = category.split(".");
+    fake.events.push({ id: `event_fake_${++counter}`, type: "event", category, created_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), associated_object_type: objectType, associated_object_id: objectId });
+  };
 
   const element = (fixture: { elements: unknown[] }, index: number, prefix: string, fields: Json): Json => {
     const next = template(fixture, index);
@@ -142,6 +152,20 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
       const account = url.searchParams.get("account_id");
       return list(url, [...fake.achTransfers.values()].filter((t) => (key === null || t.idempotency_key === key) && (account === null || t.account_id === account)));
     }
+    if (method === "GET" && url.pathname === "/events") {
+      const categories = url.searchParams.get("category.in")?.split(",");
+      const from = Date.parse(url.searchParams.get("created_at.on_or_after") ?? "") || -Infinity;
+      const limit = Number(url.searchParams.get("limit") ?? 100);
+      const matching = fake.events.filter((e) => (!categories || categories.includes(e.category)) && Date.parse(e.created_at) >= from);
+      // Stable sort: events created in the same second stay in creation order.
+      matching.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+      const ordered = url.searchParams.has("order_by.direction");
+      if (url.searchParams.get("order_by.direction") !== "ascending") matching.reverse();
+      const start = Number(url.searchParams.get("cursor") ?? 0);
+      // Like Increase, an ordered list always has a next_cursor, even past the last page.
+      const next = ordered || start + limit < matching.length ? String(start + limit) : null;
+      return respond(200, { data: matching.slice(start, start + limit), next_cursor: next });
+    }
     if (method === "GET" && url.pathname === "/entities") {
       const statuses = url.searchParams.get("status.in")?.split(",");
       const limit = Number(url.searchParams.get("limit") ?? 100);
@@ -159,6 +183,7 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
       const step = achTransitions[achSimulation[2]];
       if (!step.from.includes(transfer.status)) return respond(409, { status: 409, type: "invalid_operation_error", title: "The operation is not allowed." });
       step.apply(transfer, body);
+      emit("ach_transfer.updated", transfer.id);
       return respond(200, transfer);
     }
     if (method === "POST" && url.pathname === "/ach_transfers") {
@@ -179,6 +204,7 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
       };
       fake.achTransfers.set(transfer.id, transfer);
       if (idempotencyKey) achKeys.set(idempotencyKey, { body: signature, id: transfer.id });
+      emit("ach_transfer.created", transfer.id);
       return respond(200, transfer);
     }
 
@@ -206,6 +232,7 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
         if (mode === "decline") {
           payment.elements.push({ category: "card_decline", created_at: new Date().toISOString(), card_decline: { id: `card_decline_fake_${counter}`, card_payment_id: id } });
           fake.cardPayments.set(id, payment);
+          emit("card_payment.created", id);
           return respond(200, { type: "inbound_card_authorization_simulation_result", pending_transaction: null, declined_transaction: { source: { category: "card_decline", card_decline: { card_payment_id: id } } } });
         }
         const pendingTransactionId = `pending_transaction_fake_${counter}`;
@@ -213,6 +240,7 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
         if (typeof body.merchant_descriptor === "string") fields.merchant_descriptor = body.merchant_descriptor;
         payment.elements.push(element(authorized, 0, "card_authorization", fields));
         fake.cardPayments.set(id, payment);
+        emit("card_payment.created", id);
         return respond(200, {
           type: "inbound_card_authorization_simulation_result",
           pending_transaction: { id: pendingTransactionId, source: { category: "card_authorization", card_authorization: { card_payment_id: id } } },
@@ -224,6 +252,7 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
         if (!payment || payment.card_id !== body.card_id) return notFound();
         const transactionId = `transaction_fake_${++counter}`;
         payment.elements.push(element(refunded, 1, "card_settlement", { card_payment_id: payment.id, amount: body.amount, presentment_amount: body.amount, transaction_id: transactionId }));
+        emit("card_payment.updated", payment.id);
         return respond(200, { id: transactionId, type: "transaction" });
       }
       case "/simulations/card_reversals": {
@@ -231,12 +260,14 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
         if (!payment) return notFound();
         const amount = typeof body.amount === "number" ? body.amount : remainingCents(payment);
         payment.elements.push(element(reversed, 1, "card_reversal", { reversal_amount: amount, reversal_presentment_amount: amount, updated_authorization_amount: remainingCents(payment) - amount }));
+        emit("card_payment.updated", payment.id);
         return respond(200, payment);
       }
       case "/simulations/card_authorization_expirations": {
         const payment = fake.cardPayments.get(String(body.card_payment_id));
         if (!payment) return notFound();
         payment.elements.push(element(expired, 1, "card_authorization_expiration", { expired_amount: remainingCents(payment) }));
+        emit("card_payment.updated", payment.id);
         return respond(200, payment);
       }
       case "/simulations/card_refunds": {
@@ -246,6 +277,7 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
         const amount = typeof body.amount === "number" ? body.amount : settlement.amount;
         const transactionId = `transaction_fake_${++counter}`;
         payment.elements.push(element(refunded, 2, "card_refund", { card_payment_id: payment.id, amount, presentment_amount: amount, transaction_id: transactionId }));
+        emit("card_payment.updated", payment.id);
         return respond(200, { id: transactionId, type: "transaction" });
       }
       default:

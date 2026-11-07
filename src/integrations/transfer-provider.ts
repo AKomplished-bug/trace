@@ -11,6 +11,8 @@ import type { ListResult, ListWindow, WebhookVerifier } from "./payment-provider
 /** One outbound transfer as the provider has it now. Never carries the recipient's account number. */
 export interface ProviderTransfer {
   id: string;
+  /** The provider account the money leaves from; a transfer is ours only if it's one of our `accounts.provider_id`. */
+  accountId: string;
   amountCents: number;
   /** ISO 4217, upper case. */
   currency: string;

@@ -4,7 +4,7 @@ import { cards, externalEvents, holds, transactionEvents, transactions } from ".
 import { nextCardPurchaseStatus, type CardPaymentElement, type CardPurchaseStatus } from "../domain/cards";
 import { ENTRY_TYPE_FOR_TRANSACTION } from "../domain/ledger";
 import type { ProviderCardPayment } from "../integrations/card-provider";
-import { PermanentEventError } from "../lib/errors";
+import { NotOursEventError, PermanentEventError } from "../lib/errors";
 import type { Logger } from "../lib/logger";
 import { lockAccount } from "./accounts";
 import { transitionHold } from "./holds";
@@ -14,11 +14,11 @@ import { appendTraceEvent } from "./trace";
 
 type Transaction = typeof transactions.$inferSelect;
 
-/** No card of ours has this provider card id (yet, e.g. the bootstrap hasn't linked it). Retryable. */
-export class CardNotFoundError extends Error {
+/** No card of ours has this provider card id: the card payment is on someone else's card. Ignored. */
+export class CardNotOursError extends NotOursEventError {
   constructor(provider: string, providerCardId: string, cardPaymentId: string) {
     super(`No card with ${provider} id ${providerCardId} for card payment ${cardPaymentId}`);
-    this.name = "CardNotFoundError";
+    this.name = "CardNotOursError";
   }
 }
 
@@ -66,14 +66,14 @@ export interface CardPaymentInput {
  * - refund → new CARD_REVERSAL (one per refund, so partial refunds stack) crediting the ledger,
  *   linked to the purchase when it is on the same card payment.
  *
- * Retryable throws: unknown card; a step before its authorization. Permanent throws: steps we
- * don't model.
+ * A card payment on a card that isn't ours throws `CardNotOursError` before anything else.
+ * Retryable throws: a step before its authorization. Permanent throws: steps we don't model.
  */
 export async function applyCardPayment(tx: Tx, input: CardPaymentInput, logger: Logger): Promise<void> {
   const { cardPayment, provider, eventId } = input;
   const log = logger.child({ event_id: eventId, provider_object_id: cardPayment.id });
   const [card] = await tx.select({ id: cards.id, accountId: cards.accountId }).from(cards).where(eq(cards.providerId, cardPayment.cardId));
-  if (!card) throw new CardNotFoundError(provider, cardPayment.cardId, cardPayment.id);
+  if (!card) throw new CardNotOursError(provider, cardPayment.cardId, cardPayment.id);
 
   const accountId = card.accountId;
   await lockAccount(tx, accountId);

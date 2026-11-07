@@ -253,6 +253,7 @@ describe("ACH transfers", () => {
   it("maps a pending and a returned-after-settlement transfer, without the account number", () => {
     expect(toProviderTransfer(achPending as unknown as Increase.ACHTransfer, "req_1")).toEqual({
       id: achPending.id,
+      accountId: achPending.account_id,
       amountCents: 10000,
       currency: "USD",
       status: "pending_submission",

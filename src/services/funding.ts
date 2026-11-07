@@ -6,7 +6,7 @@ import { externalEvents, transactions } from "../db/schema";
 import { fundingOutcomeStatus, nextFundingStatus, type FundingEvent } from "../domain/funding";
 import { ENTRY_TYPE_FOR_TRANSACTION } from "../domain/ledger";
 import type { PaymentProvider, ProviderPayment } from "../integrations/payment-provider";
-import { PermanentEventError, safeErrorForLog, safeErrorMessage } from "../lib/errors";
+import { NotOursEventError, PermanentEventError, safeErrorForLog, safeErrorMessage } from "../lib/errors";
 import type { Logger } from "../lib/logger";
 import { lockAccount } from "./accounts";
 import { postLedgerEntry } from "./ledger";
@@ -42,8 +42,8 @@ export class FundingNotFoundError extends Error {
   }
 }
 
-/** The payment carries none of our metadata, so no account of ours asked for it. Permanent. */
-export class FundingNotOursError extends PermanentEventError {
+/** The payment carries none of our metadata, so no account of ours asked for it. Ignored. */
+export class FundingNotOursError extends NotOursEventError {
   constructor(provider: string, paymentId: string) {
     super(`${provider} payment ${paymentId} has no Trace transaction_id metadata and matches no FUNDING transaction`);
     this.name = "FundingNotOursError";

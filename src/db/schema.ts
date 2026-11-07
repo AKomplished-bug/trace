@@ -289,11 +289,33 @@ export const eventDeliveries = pgTable(
       .notNull()
       .references(() => externalEvents.id),
     isDuplicate: boolean("is_duplicate").notNull(),
+    // How it reached us: a verified webhook, or the worker reading the provider's events API.
+    source: text("source").$type<"webhook" | "poll">().notNull().default("webhook"),
     correlationId: uuid("correlation_id").notNull(),
     receivedAt: timestamptz("received_at").notNull().defaultNow(),
   },
-  (t) => [index("event_deliveries_external_event_id_idx").on(t.externalEventId)],
+  (t) => [
+    index("event_deliveries_external_event_id_idx").on(t.externalEventId),
+    check("event_deliveries_source", sql`${t.source} IN ('webhook', 'poll')`),
+    // The poller re-reads an overlap window every pass; only its first read of an event is a delivery.
+    uniqueIndex("event_deliveries_one_poll_key").on(t.externalEventId).where(sql`${t.source} = 'poll'`),
+  ],
 );
+
+/**
+ * Where a provider events poller has read up to, one row per provider. Claimed like an event
+ * (`claim_token` fence, lease in `lease_until`) so one worker polls at a time and no lock is held
+ * across the provider call; the cursor only moves under the claim it was read with.
+ */
+export const providerCursors = pgTable("provider_cursors", {
+  provider: text("provider").primaryKey(),
+  // The newest event read so far (its provider created_at) and its id; null until the first one.
+  lastEventCreatedAt: timestamptz("last_event_created_at"),
+  lastExternalEventId: text("last_external_event_id"),
+  claimToken: integer("claim_token").notNull().default(0),
+  leaseUntil: timestamptz("lease_until"),
+  updatedAt: updatedAt(),
+});
 
 export const ledgerEntries = pgTable(
   "ledger_entries",

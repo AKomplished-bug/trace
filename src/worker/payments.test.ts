@@ -265,7 +265,7 @@ describe("outbound payment lifecycle through Increase webhooks and the worker", 
     expect(await account()).toEqual({ ledgerCents: 50000, availableCents: 50000 });
   });
 
-  it("a transfer that isn't ours fails at once; one naming a payment that isn't there retries", async () => {
+  it("a transfer that isn't ours is ignored at once; one naming a payment that isn't there retries", async () => {
     const created = await fake.adapter.createTransfer({
       sourceAccountId: PROVIDER_ACCOUNT_ID,
       amountCents: 500,
@@ -275,12 +275,33 @@ describe("outbound payment lifecycle through Increase webhooks and the worker", 
       statementDescriptor: "Manual",
       idempotencyKey: "made-in-the-dashboard",
     });
-    expect((await notify(created.id)).outcomes).toEqual(["failed"]);
+    expect((await notify(created.id)).outcomes).toEqual(["not_ours"]);
     const [notOurs] = await db.select().from(externalEvents);
-    expect(notOurs.lastError).toBe(`PaymentNotOursError: increase transfer ${created.id} has no Trace payment idempotency key and matches no payment`);
+    expect(notOurs.status).toBe("IGNORED");
+    expect(notOurs.lastError).toBe(`not ours: PaymentNotOursError: increase transfer ${created.id} has no Trace payment idempotency key and matches no payment`);
 
     fake.achTransfers.get(created.id)!.idempotency_key = paymentIdempotencyKey(crypto.randomUUID());
     expect((await notify(created.id)).outcomes).toEqual(["retry"]);
+  });
+
+  it("a transfer from another provider account is ignored at once, even with a key that looks like ours", async () => {
+    const created = await fake.adapter.createTransfer({
+      sourceAccountId: "sandbox_account_other_database",
+      amountCents: 500,
+      accountNumber: "11112222",
+      routingNumber: "101050001",
+      recipientName: "Another database",
+      statementDescriptor: "Local",
+      idempotencyKey: paymentIdempotencyKey(crypto.randomUUID()),
+    });
+    expect((await notify(created.id)).outcomes).toEqual(["not_ours"]);
+    const [stored] = await db.select().from(externalEvents);
+    expect(stored).toMatchObject({
+      status: "IGNORED",
+      attempts: 1,
+      lastError: `not ours: PaymentNotOursError: increase transfer ${created.id} is from increase account sandbox_account_other_database, which isn't ours`,
+    });
+    expect(await account()).toEqual({ ledgerCents: 50000, availableCents: 50000 });
   });
 
   /**

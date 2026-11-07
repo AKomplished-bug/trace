@@ -6,6 +6,7 @@ import { logger as rootLogger } from "../lib/logger";
 import { newId } from "../lib/ids";
 import { INCREASE_PROVIDER } from "../integrations/increase";
 import { STRIPE_PROVIDER } from "../integrations/stripe";
+import { pollIncreaseEvents } from "../services/increase-events-poller";
 import { pruneLoginThrottles } from "../services/login-throttle";
 import { countOutcome, flushCounters, startCounterFlush } from "../services/metrics";
 import { outboxBacklog } from "../services/payments";
@@ -24,6 +25,8 @@ const IDLE_POLL_MS = 1_000;
 const ERROR_PAUSE_MS = 5_000;
 // How often the reconciliation loop looks for a due run when there is none.
 const RUN_POLL_MS = 5_000;
+// How often the Increase events poller reads new events (missed webhooks; the only path without them).
+const EVENTS_POLL_MS = 5_000;
 // How often stale login throttle rows are deleted, and how many per statement.
 const PRUNE_EVERY_MS = 10 * 60_000;
 const PRUNE_BATCH = 1_000;
@@ -77,6 +80,21 @@ async function reconciliationLoop(): Promise<void> {
   }
 }
 
+/**
+ * Reads Increase's events API every 5 s into external_events, off the event path. Instances take
+ * turns through the cursor's lease; a failed pass is counted and retried on the next one.
+ */
+async function increasePollLoop(): Promise<void> {
+  while (!shutdown.signal.aborted) {
+    try {
+      await pollIncreaseEvents(db, configuredIncrease(), log, { leaseSeconds: LEASE_SECONDS });
+    } catch (error) {
+      log.error({ err: safeErrorForLog(error) }, "events poll loop error; pausing");
+    }
+    await pause(EVENTS_POLL_MS);
+  }
+}
+
 /** Deletes stale login throttle rows every 10 minutes, in batches, off the event path. */
 async function pruneLoop(): Promise<void> {
   while (!shutdown.signal.aborted) {
@@ -99,6 +117,7 @@ log.info({ lease_seconds: LEASE_SECONDS }, "worker started");
 startCounterFlush(db, log, shutdown.signal);
 const reconciling = reconciliationLoop();
 const pruning = pruneLoop();
+const polling = increasePollLoop();
 let backlogLoggedAt = 0;
 while (!shutdown.signal.aborted) {
   try {
@@ -120,6 +139,7 @@ while (!shutdown.signal.aborted) {
 // Let a reconciliation run in progress finish before closing the pool.
 await reconciling;
 await pruning;
+await polling;
 await flushCounters(db, log);
 await pool.end();
 log.info("worker stopped");

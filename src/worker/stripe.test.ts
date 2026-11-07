@@ -239,15 +239,15 @@ describe("Stripe funding through webhook ingestion and the worker", () => {
     expect(await db.$count(ledgerEntries)).toBe(0);
   });
 
-  it("fails to Ops at once for a PaymentIntent without our metadata", async () => {
+  it("ignores at once a PaymentIntent without our metadata: it isn't ours", async () => {
     const foreign = seedIntent(fake, { ...structuredClone(succeededIntent), id: "pi_dashboard", metadata: {} });
     const event = stripeEvent(paymentSucceededEvent, foreign.id);
     await deliver(event);
-    expect(await drain()).toEqual(["failed"]);
+    expect(await drain()).toEqual(["not_ours"]);
     expect(await eventRow(event.id)).toMatchObject({
-      status: "FAILED",
+      status: "IGNORED",
       attempts: 1,
-      lastError: "FundingNotOursError: stripe payment pi_dashboard has no Trace transaction_id metadata and matches no FUNDING transaction",
+      lastError: "not ours: FundingNotOursError: stripe payment pi_dashboard has no Trace transaction_id metadata and matches no FUNDING transaction",
     });
   });
 
