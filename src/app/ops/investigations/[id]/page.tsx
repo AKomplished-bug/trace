@@ -78,7 +78,7 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
 
   return (
     <div className="space-y-5">
-      <Link href="/ops/investigations" className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline">
+      <Link href="/ops/investigations" className="inline-flex min-h-6 items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline">
         <ChevronLeft aria-hidden className="size-4" />
         Investigations
       </Link>
@@ -97,7 +97,7 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <div className="space-y-5">
-          <Panel title="Discrepancy" aside={<Link href={`/ops/reconciliation/${record.runId}#record-${record.id}`} className="text-xs text-muted-foreground hover:text-foreground">View in reconciliation run</Link>}>
+          <Panel title="Discrepancy" aside={<Link href={`/ops/reconciliation/${record.runId}#record-${record.id}`} className="inline-flex min-h-6 items-center text-xs font-medium text-primary underline-offset-4 hover:underline">View in reconciliation run</Link>}>
             <dl className="grid grid-cols-[max-content_minmax(0,1fr)_minmax(0,1fr)] gap-x-6 gap-y-1.5 text-sm">
               <dt />
               <dd className="text-xs font-medium text-muted-foreground">Trace</dd>

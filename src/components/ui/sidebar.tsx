@@ -186,6 +186,11 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
+          // The sheet is opened by SidebarTrigger, not a Radix trigger, so return focus to it by hand.
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            document.querySelector<HTMLElement>('[data-sidebar="trigger"]')?.focus()
+          }}
           className="w-(--sidebar-width) bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden"
           style={
             {

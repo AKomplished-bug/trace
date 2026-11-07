@@ -64,7 +64,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
 
   return (
     <div className="space-y-4">
-      <Link href="/ops/reconciliation" className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline">
+      <Link href="/ops/reconciliation" className="inline-flex min-h-6 items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline">
         <ChevronLeft aria-hidden className="size-4" />
         Reconciliation
       </Link>

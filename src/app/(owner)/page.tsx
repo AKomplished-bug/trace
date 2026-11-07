@@ -84,7 +84,7 @@ export default async function Dashboard() {
               </div>
             ))}
           </dl>
-          <Link href="/balance" className={`mt-5 inline-flex items-center gap-1 text-sm ${linkClass}`}>
+          <Link href="/balance" className={`mt-5 inline-flex min-h-6 items-center gap-1 text-sm ${linkClass}`}>
             How is this calculated?
             <ArrowRight aria-hidden className="size-4" />
           </Link>
@@ -125,7 +125,7 @@ export default async function Dashboard() {
           <h2 id="recent-heading" className="text-base font-semibold">
             Recent activity
           </h2>
-          <Link href="/activity" className={`text-sm ${linkClass}`}>
+          <Link href="/activity" className={`inline-flex min-h-6 items-center text-sm ${linkClass}`}>
             View all activity
           </Link>
         </div>

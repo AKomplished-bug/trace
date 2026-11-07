@@ -24,7 +24,7 @@ export default async function EventPage({ params }: { params: Promise<{ id: stri
 
   return (
     <div className="space-y-6">
-      <Link href="/ops/events" className={`inline-flex items-center gap-1 text-sm ${linkClass}`}>
+      <Link href="/ops/events" className={`inline-flex min-h-6 items-center gap-1 text-sm ${linkClass}`}>
         <ChevronLeft aria-hidden className="size-4" />
         Events
       </Link>

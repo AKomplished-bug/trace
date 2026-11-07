@@ -2,7 +2,7 @@
 
 import { ArrowUpRight } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -36,6 +36,8 @@ function amountMeaning(t: TransactionSummary): string {
  */
 export function ActivityTable({ items, caption }: { items: TransactionSummary[]; caption: string }) {
   const [selected, setSelected] = useState<TransactionSummary | null>(null);
+  // The row button that opened the sheet; focus goes back to it when the sheet closes.
+  const opener = useRef<HTMLButtonElement | null>(null);
 
   return (
     <>
@@ -65,7 +67,10 @@ export function ActivityTable({ items, caption }: { items: TransactionSummary[];
                   <TableCell className="px-4 py-3 whitespace-normal">
                     <button
                       type="button"
-                      onClick={() => setSelected(t)}
+                      onClick={(event) => {
+                        opener.current = event.currentTarget;
+                        setSelected(t);
+                      }}
                       className="block text-left font-medium outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:rounded-sm focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
                     >
                       {TYPE_LABELS[t.type]}
@@ -95,7 +100,13 @@ export function ActivityTable({ items, caption }: { items: TransactionSummary[];
       </div>
 
       <Sheet open={selected !== null} onOpenChange={(open) => !open && setSelected(null)}>
-        <SheetContent className="w-full gap-0 sm:max-w-md">
+        <SheetContent
+          className="w-full gap-0 sm:max-w-md"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            opener.current?.focus();
+          }}
+        >
           {selected && (
             <>
               <SheetHeader className="border-b p-5">
