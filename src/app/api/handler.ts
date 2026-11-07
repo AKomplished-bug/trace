@@ -3,6 +3,7 @@ import type { Db } from "../../db/client";
 import { safeErrorForLog } from "../../lib/errors";
 import { newId } from "../../lib/ids";
 import type { Logger } from "../../lib/logger";
+import { recordRequestDuration } from "../../services/latency";
 import { errorResponse } from "./responses";
 
 export interface HandlerDeps {
@@ -29,10 +30,26 @@ async function outcomeOf(response: Response): Promise<string> {
   return typeof body?.error?.code === "string" ? body.error.code : `status_${response.status}`;
 }
 
+// `Server-Timing: app;dur=<ms>`, so devtools show time in the app apart from the network. A
+// response with immutable headers is copied rather than letting the header fail the request.
+function withServerTiming(response: Response, durationMs: number): Response {
+  const value = `app;dur=${durationMs}`;
+  try {
+    response.headers.set("Server-Timing", value);
+    return response;
+  } catch {
+    const copy = new Response(response.body, response);
+    copy.headers.set("Server-Timing", value);
+    return copy;
+  }
+}
+
 /**
  * Runs a handler with a request-scoped logger (correlation id, route) and logs one outcome line
  * per request — status, outcome code and the entity ids the handler annotated. Anything it
- * doesn't handle itself is logged and answered with a generic 500, never internal detail.
+ * doesn't handle itself is logged and answered with a generic 500, never internal detail. Every
+ * response carries its duration: `duration_ms` on the line, a Server-Timing header and the
+ * `http_request_duration_ms` histogram (services/latency.ts).
  * Handlers still check auth first (requireOwner / requireOps), inside this wrapper.
  */
 export async function withRequestLog(
@@ -40,6 +57,7 @@ export async function withRequestLog(
   route: string,
   body: (scope: RequestScope) => Promise<Response>,
 ): Promise<Response> {
+  const startedAt = performance.now();
   const correlationId = newId();
   const log = deps.logger.child({ correlation_id: correlationId, route });
   const fields: Record<string, unknown> = {};
@@ -47,11 +65,15 @@ export async function withRequestLog(
   try {
     response = await body({ log, correlationId, annotate: (more) => Object.assign(fields, more) });
   } catch (error) {
-    log.error({ ...fields, outcome: "error", err: safeErrorForLog(error) }, "request failed");
-    return errorResponse(500, "internal_error", "Something went wrong on our side; try again");
+    const durationMs = Math.round(performance.now() - startedAt);
+    recordRequestDuration(route, durationMs);
+    log.error({ ...fields, outcome: "error", duration_ms: durationMs, err: safeErrorForLog(error) }, "request failed");
+    return withServerTiming(errorResponse(500, "internal_error", "Something went wrong on our side; try again"), durationMs);
   }
-  log.info({ ...fields, status: response.status, outcome: await outcomeOf(response) }, "request handled");
-  return response;
+  const durationMs = Math.round(performance.now() - startedAt);
+  recordRequestDuration(route, durationMs);
+  log.info({ ...fields, status: response.status, outcome: await outcomeOf(response), duration_ms: durationMs }, "request handled");
+  return withServerTiming(response, durationMs);
 }
 
 /** 400 naming each invalid field, e.g. `type: Invalid option: expected one of …`. */
