@@ -59,3 +59,20 @@ export function invalidRequest(error: z.ZodError): Response {
   const problems = error.issues.map((issue) => (issue.path.length ? `${issue.path.join(".")}: ${issue.message}` : issue.message));
   return errorResponse(400, "invalid_request", problems.join("; "));
 }
+
+/**
+ * CSRF guard for unsafe requests: a request whose Origin is present must come from this host
+ * (403 `cross_origin`), on top of the SameSite=Lax cookie. Null when it may go ahead.
+ */
+export function checkSameOrigin(request: Request): Response | null {
+  const origin = request.headers.get("origin");
+  if (origin === null) return null;
+  const host = request.headers.get("host") ?? new URL(request.url).host;
+  let originHost: string | null = null;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    // "null" or garbage: treated as cross-origin below.
+  }
+  return originHost === host ? null : errorResponse(403, "cross_origin", "This request must come from the Trace app");
+}

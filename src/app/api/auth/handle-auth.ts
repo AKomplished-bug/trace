@@ -4,7 +4,7 @@ import { sessionConfig } from "../../../lib/config";
 import { SESSION_COOKIE, SESSION_TTL_SECONDS, signSession } from "../../../lib/session";
 import { findSessionUser } from "../../../services/users";
 import { HOME_FOR_ROLE } from "../../_lib/auth-routes";
-import { invalidRequest, withRequestLog, type HandlerDeps } from "../handler";
+import { checkSameOrigin, invalidRequest, withRequestLog, type HandlerDeps } from "../handler";
 import { errorResponse } from "../responses";
 
 const bodySchema = z.object({ userId: z.uuid("must be a user id") });
@@ -22,17 +22,8 @@ type BodyKind = "json" | "form";
  * without this, another site could post a form that signs the visitor in as someone else.
  */
 function checkPost(request: Request): BodyKind | Response {
-  const origin = request.headers.get("origin");
-  if (origin !== null) {
-    const host = request.headers.get("host") ?? new URL(request.url).host;
-    let originHost: string | null = null;
-    try {
-      originHost = new URL(origin).host;
-    } catch {
-      // "null" or garbage: treated as cross-origin below.
-    }
-    if (originHost !== host) return errorResponse(403, "cross_origin", "This request must come from the Trace app");
-  }
+  const crossOrigin = checkSameOrigin(request);
+  if (crossOrigin) return crossOrigin;
   const type = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
   if (type === "application/json") return "json";
   if (type === "application/x-www-form-urlencoded") return "form";
