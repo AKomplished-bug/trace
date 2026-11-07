@@ -40,6 +40,8 @@ export interface TransferProvider extends WebhookVerifier {
   readonly name: string;
   createTransfer(input: CreateTransferInput): Promise<ProviderTransfer>;
   retrieveTransfer(id: string): Promise<ProviderTransfer>;
+  /** The transfer created with our idempotency key, or null if the provider has none. */
+  findTransferByIdempotencyKey(idempotencyKey: string): Promise<ProviderTransfer | null>;
   /** Sandbox only: the network steps. Effects arrive by webhook. */
   simulateTransferSubmission(id: string): Promise<ProviderTransfer>;
   simulateTransferSettlement(id: string): Promise<ProviderTransfer>;

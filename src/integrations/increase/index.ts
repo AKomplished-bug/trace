@@ -308,6 +308,15 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
     return toProviderTransfer(data, requestId);
   }
 
+  // https://increase.com/documentation/api/ach-transfers#list-ach-transfers (filtered to the one with our key)
+  async findTransferByIdempotencyKey(idempotencyKey: string): Promise<ProviderTransfer | null> {
+    const { data, requestId } = await this.call("list ACH transfers by idempotency key", () =>
+      this.increase().achTransfers.list({ idempotency_key: idempotencyKey, limit: 1 }),
+    );
+    const [transfer] = data.data;
+    return transfer ? toProviderTransfer(transfer, requestId) : null;
+  }
+
   // https://increase.com/documentation/api/ach-transfers#sandbox-submit-an-ach-transfer
   async simulateTransferSubmission(id: string): Promise<ProviderTransfer> {
     const { data, requestId } = await this.call("simulate ACH submission", () => this.increase().simulations.achTransfers.submit(id));

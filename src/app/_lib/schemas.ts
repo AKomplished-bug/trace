@@ -54,6 +54,8 @@ export const eventListQuery = z.object({
 
 export const eventIdParams = z.object({ id: z.uuid("must be an event id") });
 
+export const paymentIdParams = z.object({ id: z.uuid("must be a payment id") });
+
 /** URLSearchParams → plain object; a repeated key keeps its first value. */
 export function searchParamsObject(params: URLSearchParams): Record<string, string> {
   const result: Record<string, string> = {};
