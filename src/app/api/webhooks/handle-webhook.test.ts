@@ -1,11 +1,12 @@
 import { asc, eq } from "drizzle-orm";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eventDeliveries, externalEvents } from "../../../db/schema";
 import { createTestDb, resetDb } from "../../../db/test-helpers";
 import { createFakeIncrease, signedIncreaseWebhook } from "../../../integrations/increase/fake-increase";
 import cardPaymentCreated from "../../../integrations/increase/fixtures/event.card_payment.created.json";
 import { createFakeStripe, signedWebhook } from "../../../integrations/stripe/fake-stripe";
 import paymentSucceeded from "../../../integrations/stripe/fixtures/event.payment_intent.succeeded.json";
+import { WebhookVerificationError } from "../../../integrations/payment-provider";
 import { logger } from "../../../lib/logger";
 import { handleWebhook } from "./handle-webhook";
 
@@ -80,6 +81,21 @@ describe("POST /api/webhooks/:provider", () => {
     });
     expect(await db.$count(externalEvents)).toBe(0);
     expect(await db.$count(eventDeliveries)).toBe(0);
+  });
+
+  it("still 400s when the verifier throws another copy's error class (a page created apiDeps)", async () => {
+    vi.resetModules();
+    const copy = await import("../../../integrations/payment-provider");
+    expect(copy.WebhookVerificationError).not.toBe(WebhookVerificationError);
+    const verifier = {
+      verifyWebhook: () => {
+        throw new copy.WebhookVerificationError();
+      },
+    };
+    const request = new Request("http://localhost/api/webhooks/stripe", { method: "POST", body: "{}" });
+    const response = await handleWebhook({ ...deps, webhookVerifiers: { stripe: verifier } }, "stripe", request);
+    expect(response.status).toBe(400);
+    expect(await db.$count(externalEvents)).toBe(0);
   });
 
   it("stores a Standard Webhooks-signed Increase event under its category, and rejects a forged one", async () => {

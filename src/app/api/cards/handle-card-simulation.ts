@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Db } from "../../../db/client";
 import type { CardProvider } from "../../../integrations/card-provider";
-import { PaymentProviderError, ProviderRejectedError } from "../../../integrations/payment-provider";
+import { isPaymentProviderError, isProviderRejectedError } from "../../../integrations/payment-provider";
 import type { Logger } from "../../../lib/logger";
 import {
   CardNotLinkedError,
@@ -89,10 +89,10 @@ export async function handleCardSimulation(
       if (error instanceof PartialReversalNotSupportedError) {
         return errorResponse(422, "partial_reversal_not_supported", "Partial authorization reversals aren't supported; omit amountCents to void in full");
       }
-      if (error instanceof ProviderRejectedError) {
+      if (isProviderRejectedError(error)) {
         return errorResponse(422, "provider_rejected", "Increase refused this step for the purchase's current state; nothing changed");
       }
-      if (error instanceof PaymentProviderError) {
+      if (isPaymentProviderError(error)) {
         return errorResponse(
           502,
           "provider_unavailable",
