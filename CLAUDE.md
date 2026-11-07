@@ -199,7 +199,7 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
   if it commits (`countAfterCommit`). Label values come from fixed sets, never ids or raw input.
   Wired: `events_processed_total{provider,type,outcome}`, `webhooks_received_total{provider,outcome}`,
   `funding_requests_total{outcome}`, `funding_outcomes_total{outcome}`,
-  `card_steps_total{kind,outcome}`, `payment_submissions_total{outcome}`,
+  `card_steps_total{kind,outcome}`, `payment_steps_total{kind,outcome}`, `payment_submissions_total{outcome}`,
   `ops_event_retries_total{outcome}`, `replay_mismatch_total{scope}`.
 - State is counted from the tables, not counters: events by status and the payment backlog
   (`given_up_payments` …). `GET /api/ops/metrics` (OPS, JSON) returns both; `/ops` shows them.
