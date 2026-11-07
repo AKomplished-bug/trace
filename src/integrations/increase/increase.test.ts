@@ -207,12 +207,29 @@ describe("Increase API calls (fake Increase behind the real SDK)", () => {
     expect(fake.requests).toHaveLength(2);
   });
 
-  it("bootstraps a funded sandbox account and card", async () => {
+  it("bootstraps a funded sandbox account and card owned by the given entity", async () => {
     const fake = createFakeIncrease();
-    const result = await fake.adapter.bootstrapSandboxCard({ name: "Trace demo", fundingCents: 10_000_000 });
+    const result = await fake.adapter.bootstrapSandboxCard({ name: "Trace demo", fundingCents: 10_000_000, entityId: "entity_fake_owner" });
     expect(result).toEqual({ accountId: expect.stringMatching(/^account_fake_/), cardId: expect.stringMatching(/^card_fake_/), last4: "4242" });
     expect(fake.requests.map((r) => r.path)).toEqual(["/accounts", "/account_numbers", "/simulations/inbound_ach_transfers", "/cards"]);
+    expect(fake.requests[0].body).toMatchObject({ entity_id: "entity_fake_owner" });
     expect(fake.requests[2].body).toMatchObject({ amount: 10_000_000 });
+  });
+
+  it("picks the bootstrap entity: the configured one, else the only active one, else a clear error", async () => {
+    const fake = createFakeIncrease();
+    expect(await fake.adapter.resolveEntityId("sandbox_entity_configured")).toEqual({ entityId: "sandbox_entity_configured", source: "configured" });
+    expect(fake.requests).toHaveLength(0);
+
+    await expect(fake.adapter.resolveEntityId(undefined)).rejects.toThrow("No active Increase entity: create one in the sandbox (see README) or set INCREASE_ENTITY_ID");
+
+    fake.entities.push({ id: "entity_fake_archived", status: "archived" }, { id: "entity_fake_active", status: "active" });
+    expect(await fake.adapter.resolveEntityId(undefined)).toEqual({ entityId: "entity_fake_active", source: "listed" });
+
+    fake.entities.push({ id: "entity_fake_second", status: "active" });
+    await expect(fake.adapter.resolveEntityId(undefined)).rejects.toThrow("More than one active Increase entity: set INCREASE_ENTITY_ID to the one that should own the account");
+    expect(await fake.adapter.resolveEntityId("entity_fake_second")).toEqual({ entityId: "entity_fake_second", source: "configured" });
+    expect(fake.requests.map((r) => r.path)).toEqual(["/entities", "/entities", "/entities"]);
   });
 
   it("returns a seeded fixture on retrieve", async () => {

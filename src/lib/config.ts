@@ -30,6 +30,14 @@ const seedFields = {
   TRACE_OPS_PASSWORD: seedPassword,
 };
 
+// Increase sandbox setup (npm run increase:bootstrap). Empty counts as unset.
+const increaseBootstrapSchema = z.object({
+  ...databaseFields,
+  INCREASE_API_KEY: z.string().min(1),
+  // Owner of the sandbox account the bootstrap creates; unset = the only active entity.
+  INCREASE_ENTITY_ID: z.preprocess((value) => (value === "" ? undefined : value), z.string().min(1).optional()),
+});
+
 const schema = z
   .object({
     ...databaseFields,
@@ -56,6 +64,7 @@ export type Config = z.infer<typeof schema>;
 export type SessionConfig = z.infer<typeof sessionSchema>;
 export type DatabaseConfig = z.infer<typeof databaseSchema>;
 export type SeedConfig = z.infer<typeof seedSchema>;
+export type IncreaseBootstrapConfig = z.infer<typeof increaseBootstrapSchema>;
 
 function parseWith<S extends z.ZodType>(target: S, env: Record<string, string | undefined>): z.infer<S> {
   const result = target.safeParse(env);
@@ -85,6 +94,11 @@ export function parseDatabaseConfig(env: Record<string, string | undefined>): Da
 /** DATABASE_URL and the seeded users' passwords, for db:seed; both passwords required in production. */
 export function parseSeedConfig(env: Record<string, string | undefined>): SeedConfig {
   return parseWith(seedSchema, env);
+}
+
+/** DATABASE_URL, INCREASE_API_KEY and the optional INCREASE_ENTITY_ID, for npm run increase:bootstrap. */
+export function parseIncreaseBootstrapConfig(env: Record<string, string | undefined>): IncreaseBootstrapConfig {
+  return parseWith(increaseBootstrapSchema, env);
 }
 
 let cached: Config | undefined;
