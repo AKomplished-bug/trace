@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Runs a one-off task on the latest trace-migrate definition and waits for its exit code.
-# Usage: infra/aws/run-task.sh migrate|seed
+# Usage: infra/aws/run-task.sh migrate|seed|increase-bootstrap
 source "$(dirname "$0")/common.sh"
 
 case "${1:-}" in
   migrate) SCRIPT=scripts/migrate.ts ;;
   seed) SCRIPT=scripts/seed.ts ;; # idempotent base seed; db:seed:demo is dev-only and refuses production
-  *) echo "usage: $0 migrate|seed" >&2; exit 2 ;;
+  increase-bootstrap) SCRIPT=scripts/increase-bootstrap.ts ;; # links the seeded card and account to Increase; a no-op once linked
+  *) echo "usage: $0 migrate|seed|increase-bootstrap" >&2; exit 2 ;;
 esac
 
 TASK_ARN=$(awsc ecs run-task --cluster "$CLUSTER" --task-definition trace-migrate --launch-type FARGATE \
