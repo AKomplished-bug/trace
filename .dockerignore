@@ -3,9 +3,9 @@
 node_modules
 coverage
 dist
-.env
-.env.*
+.env*
 !.env.example
+.demo-credentials
 *.log
 .DS_Store
 infra

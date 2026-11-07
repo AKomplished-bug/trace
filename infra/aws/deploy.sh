@@ -21,8 +21,10 @@ APP_SECRETS=("${SECRETS[@]}")
 WEB_TD=$(register_task trace-web 256 1024 "$IMAGE" '["node_modules/.bin/next","start","--port","3000"]' "${APP_SECRETS[@]}")
 # tsx as a loader, not the CLI, so the worker is the process that gets SIGTERM.
 WORKER_TD=$(register_task trace-worker 256 512 "$IMAGE" '["node","--import","tsx","src/worker/index.ts"]' "${APP_SECRETS[@]}")
-# Migrate and seed read only DATABASE_URL; run-task.sh overrides the command.
-register_task trace-migrate 256 512 "$IMAGE" '["node_modules/.bin/tsx","scripts/migrate.ts"]' DATABASE_URL >/dev/null
+# Migrate and seed read DATABASE_URL, and seed the users' passwords (only this task gets them);
+# run-task.sh overrides the command.
+register_task trace-migrate 256 512 "$IMAGE" '["node_modules/.bin/tsx","scripts/migrate.ts"]' \
+  DATABASE_URL TRACE_OWNER_PASSWORD TRACE_OPS_PASSWORD >/dev/null
 
 echo "== Migrate"
 "$(dirname "$0")/run-task.sh" migrate
