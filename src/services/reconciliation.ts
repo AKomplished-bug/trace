@@ -15,7 +15,7 @@ import {
   type ReconciledType,
 } from "../domain/reconciliation";
 import type { CardProvider, ListedCardPayment } from "../integrations/card-provider";
-import { ProviderRejectedError, type ListedPayment, type ListWindow, type PaymentProvider } from "../integrations/payment-provider";
+import { isProviderRejectedError, type ListedPayment, type ListWindow, type PaymentProvider } from "../integrations/payment-provider";
 import type { ListedTransfer, TransferProvider } from "../integrations/transfer-provider";
 import { safeErrorForLog, safeErrorMessage } from "../lib/errors";
 import type { Logger } from "../lib/logger";
@@ -340,7 +340,7 @@ async function fetchRecords(
       log.info({ outcome: "fetched", kind, provider_object_id: id, provider_request_id: item.requestId }, "retrieved parent outside the window");
       return item;
     } catch (error) {
-      if (!(error instanceof ProviderRejectedError)) throw error;
+      if (!isProviderRejectedError(error)) throw error;
       log.warn({ outcome: "parent_not_found", kind, provider_object_id: id, provider_request_id: error.requestId }, "provider has no parent for our refund or return");
       return null;
     }
