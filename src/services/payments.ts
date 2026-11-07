@@ -277,7 +277,8 @@ export interface AchTransferInput {
   transfer: ProviderTransfer;
 }
 
-const PAYMENT_KEY = /^payment-(.+)$/;
+/** Our idempotency key on a transfer (`paymentIdempotencyKey`), capturing the payment id. */
+export const PAYMENT_KEY = /^payment-(.+)$/;
 
 /**
  * Applies an outbound transfer's state inside the event's processing transaction. The fetched
