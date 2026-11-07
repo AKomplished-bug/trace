@@ -60,9 +60,9 @@ const HOLD_NOTES: Partial<Record<TimelineStep["kind"], string>> = {
 /** The amount a step shows: the signed ledger change for postings, the held amount for holds. */
 export function stepAmount(step: TimelineStep): { cents: number; signed: boolean; note?: string } | null {
   if (step.kind === "LEDGER_POSTED") return { cents: step.ledgerDeltaCents, signed: true };
-  // A flag on the authorization above it, not a second hold: no amount of its own.
-  if (step.amountCents === null || step.kind === "HOLD_EXCEEDS_AVAILABLE") return null;
-  // Only hold steps get a note; a status change just shows the transaction's amount.
+  // A status change moves no money (its amountCents is the transaction's, e.g. the authorized
+  // amount after a lower settlement), and a HOLD_EXCEEDS_AVAILABLE flag isn't a second hold.
+  if (step.amountCents === null || step.kind === "STATUS_CHANGED" || step.kind === "HOLD_EXCEEDS_AVAILABLE") return null;
   const note = HOLD_NOTES[step.kind];
   return note ? { cents: step.amountCents, signed: false, note } : { cents: step.amountCents, signed: false };
 }
