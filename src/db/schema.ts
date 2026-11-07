@@ -18,6 +18,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { HOLD_KINDS, HOLD_STATUSES, LEDGER_ENTRY_TYPES, TRANSACTION_TYPES } from "../domain/ledger";
 import { PAYMENT_STATUSES } from "../domain/payments";
+import { RECONCILIATION_STATUSES } from "../domain/reconciliation";
 
 // Amounts are integer cents in bigint columns, read as JS numbers (safe up to ±2^53).
 const cents = (name: string) => bigint(name, { mode: "number" });
@@ -71,6 +72,9 @@ export const transactionEventKind = pgEnum("transaction_event_kind", [
   "SUBMITTED_TO_NETWORK",
 ]);
 export const auditActorType = pgEnum("audit_actor_type", ["USER", "SYSTEM"]);
+export const reconciliationRunStatus = pgEnum("reconciliation_run_status", ["PENDING", "RUNNING", "SUCCEEDED", "FAILED"]);
+export const reconciliationStatus = pgEnum("reconciliation_status", RECONCILIATION_STATUSES);
+export const investigationStatus = pgEnum("investigation_status", ["OPEN", "RESOLVED"]);
 
 export const businesses = pgTable("businesses", {
   id: id(),
@@ -157,6 +161,8 @@ export const transactions = pgTable(
     uniqueIndex("transactions_account_idempotency_key").on(t.accountId, t.idempotencyKey),
     uniqueIndex("transactions_provider_object_type_key").on(t.provider, t.providerObjectId, t.type),
     index("transactions_related_transaction_id_idx").on(t.relatedTransactionId),
+    // Reconciliation: a provider's transactions created in a window.
+    index("transactions_provider_created_idx").on(t.provider, t.createdAt),
     check("transactions_amount_positive", sql`${t.amountCents} > 0`),
     check("transactions_idempotency_has_hash", sql`(${t.idempotencyKey} IS NULL) = (${t.requestHash} IS NULL)`),
     usdOnly("transactions"),
@@ -367,6 +373,127 @@ export const auditEvents = pgTable(
   (t) => [
     index("audit_events_entity_idx").on(t.entityType, t.entityId, t.createdAt),
     index("audit_events_created_idx").on(t.createdAt),
+  ],
+);
+
+/**
+ * One reconciliation of a provider's records against ours for a time window; also the job queue the
+ * worker claims from, like external_events (attempts, claim_token fencing, lease in next_attempt_at).
+ */
+export const reconciliationRuns = pgTable(
+  "reconciliation_runs",
+  {
+    id: id(),
+    provider: text("provider").notNull(),
+    windowStart: timestamptz("window_start").notNull(),
+    windowEnd: timestamptz("window_end").notNull(),
+    status: reconciliationRunStatus("status").notNull().default("PENDING"),
+    // Retry budget: claims so far. Ops retry resets it.
+    attempts: integer("attempts").notNull().default(0),
+    // Fencing token: incremented on every claim (and Ops retry), never reset.
+    claimToken: integer("claim_token").notNull().default(0),
+    // When the run is next due; while RUNNING, when the worker's claim (lease) expires.
+    nextAttemptAt: timestamptz("next_attempt_at").notNull().defaultNow(),
+    // Sanitized (safeErrorMessage).
+    lastError: text("last_error"),
+    matchedCount: integer("matched_count"),
+    exceptionCount: integer("exception_count"),
+    requestedBy: uuid("requested_by").references(() => users.id),
+    correlationId: uuid("correlation_id").notNull(),
+    createdAt: createdAt(),
+    finishedAt: timestamptz("finished_at"),
+  },
+  (t) => [
+    // One active run per provider: a second request (or a concurrent one) finds the first.
+    uniqueIndex("reconciliation_runs_active_provider_key").on(t.provider).where(sql`${t.status} IN ('PENDING', 'RUNNING')`),
+    // Worker claim: due runs that still need work.
+    index("reconciliation_runs_due_idx").on(t.nextAttemptAt).where(sql`${t.status} IN ('PENDING', 'RUNNING')`),
+    // Ops list (newest first) and each provider's latest finished run.
+    index("reconciliation_runs_created_idx").on(t.createdAt, t.id),
+    index("reconciliation_runs_provider_finished_idx").on(t.provider, t.finishedAt).where(sql`${t.status} = 'SUCCEEDED'`),
+    check("reconciliation_runs_window_order", sql`${t.windowEnd} > ${t.windowStart}`),
+  ],
+);
+
+/**
+ * One comparison result of a run: our transaction and the provider's record side by side (either may
+ * be missing). Ids, amounts and statuses only; never payloads.
+ */
+export const reconciliationRecords = pgTable(
+  "reconciliation_records",
+  {
+    id: id(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => reconciliationRuns.id),
+    status: reconciliationStatus("status").notNull(),
+    // Why, from a fixed set (e.g. "amount", "status", "reference", "within_grace").
+    reason: text("reason"),
+    transactionType: transactionType("transaction_type").notNull(),
+    transactionId: uuid("transaction_id").references(() => transactions.id),
+    accountId: uuid("account_id").references(() => accounts.id),
+    // The provider object (matched against transactions.provider_object_id) and the element behind it.
+    externalId: text("external_id"),
+    externalRef: text("external_ref"),
+    internalAmountCents: cents("internal_amount_cents"),
+    externalAmountCents: cents("external_amount_cents"),
+    internalStatus: text("internal_status"),
+    externalStatus: text("external_status"),
+    // Set once, when Ops resolves the record's investigation; the comparison itself is never edited.
+    resolvedAt: timestamptz("resolved_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("reconciliation_records_run_status_idx").on(t.runId, t.status),
+    index("reconciliation_records_transaction_id_idx").on(t.transactionId),
+  ],
+);
+
+/** An Ops case on one reconciliation record. Resolving never edits history (see CLAUDE.md, Reconciliation). */
+export const investigations = pgTable(
+  "investigations",
+  {
+    id: id(),
+    recordId: uuid("record_id")
+      .notNull()
+      .unique()
+      .references(() => reconciliationRecords.id),
+    transactionId: uuid("transaction_id").references(() => transactions.id),
+    accountId: uuid("account_id").references(() => accounts.id),
+    status: investigationStatus("status").notNull().default("OPEN"),
+    openedBy: uuid("opened_by")
+      .notNull()
+      .references(() => users.id),
+    resolvedBy: uuid("resolved_by").references(() => users.id),
+    // The ADJUSTMENT the resolution posted, if any.
+    adjustmentTransactionId: uuid("adjustment_transaction_id").references(() => transactions.id),
+    createdAt: createdAt(),
+    resolvedAt: timestamptz("resolved_at"),
+  },
+  (t) => [
+    index("investigations_status_created_idx").on(t.status, t.createdAt, t.id),
+    // One open case per transaction: overlapping runs report the same difference as separate records.
+    uniqueIndex("investigations_open_transaction_key").on(t.transactionId).where(sql`${t.status} = 'OPEN'`),
+    check("investigations_resolved_at_matches_status", sql`(${t.status} = 'OPEN') = (${t.resolvedAt} IS NULL)`),
+  ],
+);
+
+export const investigationNotes = pgTable(
+  "investigation_notes",
+  {
+    id: id(),
+    investigationId: uuid("investigation_id")
+      .notNull()
+      .references(() => investigations.id),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id),
+    body: text("body").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("investigation_notes_investigation_created_idx").on(t.investigationId, t.createdAt),
+    check("investigation_notes_body_length", sql`char_length(${t.body}) BETWEEN 1 AND 2000`),
   ],
 );
 
