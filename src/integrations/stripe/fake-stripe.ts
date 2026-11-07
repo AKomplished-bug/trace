@@ -6,8 +6,9 @@ import { StripeAdapter } from ".";
 /**
  * Test-only stand-in for the Stripe API behind the real SDK (via its fetch HTTP client), so
  * tests exercise our real requests — idempotency key, params, timeout — without calling Stripe.
- * Handles POST /v1/payment_intents (replaying by Idempotency-Key, like Stripe) and
- * GET /v1/payment_intents/:id.
+ * Handles POST /v1/payment_intents (replaying by Idempotency-Key, like Stripe),
+ * GET /v1/payment_intents/:id and GET /v1/payment_intents (created[gte]/created[lt], newest first,
+ * limit + starting_after pagination).
  */
 export const WEBHOOK_SECRET = "whsec_test_fixture_secret";
 
@@ -67,6 +68,7 @@ export function createFakeStripe({ timeoutMs = 10_000 }: { timeoutMs?: number } 
       const intent: Intent = {
         ...structuredClone(base),
         id,
+        created: Math.floor(Date.now() / 1000),
         amount,
         amount_received: mode === "decline" ? 0 : amount,
         latest_charge: `ch_fake_${counter}`,
@@ -80,6 +82,19 @@ export function createFakeStripe({ timeoutMs = 10_000 }: { timeoutMs?: number } 
       if (idempotencyKey) byIdempotencyKey.set(idempotencyKey, result);
       if (mode === "hang_after_create") return hang();
       return respond(result.status, result.body);
+    }
+
+    if (method === "GET" && url.pathname === "/v1/payment_intents") {
+      const gte = Number(url.searchParams.get("created[gte]") ?? -Infinity);
+      const lt = Number(url.searchParams.get("created[lt]") ?? Infinity);
+      const limit = Number(url.searchParams.get("limit") ?? 10);
+      const all = [...fake.intents.values()]
+        .filter((i) => (i.created as number) >= gte && (i.created as number) < lt)
+        .sort((a, b) => (b.created as number) - (a.created as number) || (a.id < b.id ? 1 : -1));
+      const after = url.searchParams.get("starting_after");
+      const start = after ? all.findIndex((i) => i.id === after) + 1 : 0;
+      const data = all.slice(start, start + limit);
+      return respond(200, { object: "list", url: "/v1/payment_intents", has_more: start + limit < all.length, data });
     }
 
     const match = /^\/v1\/payment_intents\/([^/]+)$/.exec(url.pathname);

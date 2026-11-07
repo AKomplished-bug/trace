@@ -15,6 +15,9 @@ import { IncreaseAdapter } from ".";
  * from the fixtures, the way the sandbox does. Refunds land on the purchase's own card payment.
  * ACH transfers live in `achTransfers`; creation honours `Idempotency-Key` like Increase (same key
  * and body → the first transfer; different body → 409 idempotency_key_already_used_error).
+ * GET /card_payments and GET /ach_transfers list by `created_at.on_or_after` / `created_at.before`
+ * (card payments also by `card_id`; ACH transfers by `account_id` and `idempotency_key`), newest
+ * first, `limit` per page with an opaque `next_cursor`.
  */
 export const INCREASE_WEBHOOK_SECRET = "increase_test_fixture_secret";
 
@@ -115,16 +118,32 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
     t.submission = { submitted_at: now, trace_number: "058349238292834", effective_date: now.slice(0, 10), expected_funds_settlement_at: now, expected_settlement_schedule: "same_day", administrative_returns_expected_by: now };
   };
 
+  const list = (url: URL, items: Json[]) => {
+    const from = Date.parse(url.searchParams.get("created_at.on_or_after") ?? "") || -Infinity;
+    const before = Date.parse(url.searchParams.get("created_at.before") ?? "") || Infinity;
+    const limit = Number(url.searchParams.get("limit") ?? 100);
+    const matching = items
+      .filter((item) => Date.parse(item.created_at as string) >= from && Date.parse(item.created_at as string) < before)
+      .sort((a, b) => Date.parse(b.created_at as string) - Date.parse(a.created_at as string));
+    const start = Number(url.searchParams.get("cursor") ?? 0);
+    const next = start + limit < matching.length ? String(start + limit) : null;
+    return respond(200, { data: matching.slice(start, start + limit), next_cursor: next });
+  };
+
   const route = async (url: URL, method: string, body: Json, idempotencyKey: string | null, mode: FakeIncrease["next"]): Promise<Response> => {
+    if (method === "GET" && url.pathname === "/card_payments") {
+      const card = url.searchParams.get("card_id");
+      return list(url, [...fake.cardPayments.values()].filter((p) => card === null || p.card_id === card));
+    }
+    if (method === "GET" && url.pathname === "/ach_transfers") {
+      const key = url.searchParams.get("idempotency_key");
+      const account = url.searchParams.get("account_id");
+      return list(url, [...fake.achTransfers.values()].filter((t) => (key === null || t.idempotency_key === key) && (account === null || t.account_id === account)));
+    }
     const achRetrieve = /^\/ach_transfers\/([^/]+)$/.exec(url.pathname);
     if (method === "GET" && achRetrieve) {
       const transfer = fake.achTransfers.get(achRetrieve[1]);
       return transfer ? respond(200, transfer) : notFound();
-    }
-    if (method === "GET" && url.pathname === "/ach_transfers") {
-      const key = url.searchParams.get("idempotency_key");
-      const data = [...fake.achTransfers.values()].filter((t) => key === null || t.idempotency_key === key);
-      return respond(200, { data, next_cursor: null });
     }
     const achSimulation = /^\/simulations\/ach_transfers\/([^/]+)\/(submit|settle|return)$/.exec(url.pathname);
     if (method === "POST" && achSimulation) {
@@ -174,7 +193,7 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
         return respond(200, { id: `card_fake_${++counter}`, type: "card", account_id: body.account_id, last4: "4242", status: "active" });
       case "/simulations/card_authorizations": {
         const id = `card_payment_fake_${++counter}`;
-        const payment: CardPaymentJson = { ...structuredClone(authorized), id, card_id: String(body.card_id), elements: [] };
+        const payment: CardPaymentJson = { ...structuredClone(authorized), id, card_id: String(body.card_id), created_at: new Date().toISOString(), elements: [] };
         if (mode === "decline") {
           payment.elements.push({ category: "card_decline", created_at: new Date().toISOString(), card_decline: { id: `card_decline_fake_${counter}`, card_payment_id: id } });
           fake.cardPayments.set(id, payment);

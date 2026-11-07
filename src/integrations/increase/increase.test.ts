@@ -3,7 +3,7 @@ import Increase from "increase";
 import { Webhook } from "standardwebhooks";
 import { describe, expect, it } from "vitest";
 import { IdempotencyKeyReusedError, PaymentProviderError, ProviderRejectedError, WebhookVerificationError } from "../payment-provider";
-import { createFakeIncrease, INCREASE_WEBHOOK_SECRET, seedCardPayment, signedIncreaseWebhook, type CardPaymentJson } from "./fake-increase";
+import { createFakeIncrease, INCREASE_WEBHOOK_SECRET, seedCardPayment, signedIncreaseWebhook, type AchTransferJson, type CardPaymentJson } from "./fake-increase";
 import achPending from "./fixtures/ach_transfer.pending_submission.json";
 import achReturned from "./fixtures/ach_transfer.returned.json";
 import authorized from "./fixtures/card_payment.authorized.json";
@@ -322,5 +322,78 @@ describe("ACH transfers", () => {
       `/simulations/ach_transfers/${id}/return`,
     ]);
     expect((await fake.adapter.retrieveTransfer(id)).status).toBe("returned");
+  });
+});
+
+describe("list reads for reconciliation", () => {
+  const window = { start: new Date("2026-11-07T00:00:00Z"), end: new Date("2026-11-08T00:00:00Z") };
+  const at = (minutes: number) => new Date(window.start.getTime() + minutes * 60_000).toISOString();
+
+  const card = (authorized as unknown as CardPaymentJson).card_id;
+
+  it("lists every card payment on our card created in the window, across pages, with each page's request id", async () => {
+    const fake = createFakeIncrease();
+    for (let i = 0; i < 205; i++) {
+      const elements = (authorized as unknown as CardPaymentJson).elements.map((e) => ({ ...e, created_at: at(i + 5) }));
+      seedCardPayment(fake, { ...(authorized as unknown as CardPaymentJson), id: `card_payment_${i}`, created_at: at(i), elements });
+    }
+    seedCardPayment(fake, { ...(authorized as unknown as CardPaymentJson), id: "card_payment_before", created_at: "2026-11-06T23:59:59Z" });
+    seedCardPayment(fake, { ...(authorized as unknown as CardPaymentJson), id: "card_payment_at_end", created_at: window.end.toISOString() });
+    seedCardPayment(fake, { ...(authorized as unknown as CardPaymentJson), id: "card_payment_other_card", card_id: "card_someone_else", created_at: at(1) });
+
+    const { items, requestIds } = await fake.adapter.listCardPayments(window, { cardId: card });
+    expect(items).toHaveLength(205);
+    expect(items.some((p) => ["card_payment_before", "card_payment_at_end", "card_payment_other_card"].includes(p.id))).toBe(false);
+    expect(requestIds).toHaveLength(3);
+    expect(requestIds.every((id) => id?.startsWith("req_fake_"))).toBe(true);
+    const first = items.find((p) => p.id === "card_payment_0")!;
+    expect(first).toMatchObject({ createdAt: new Date(at(0)), updatedAt: new Date(at(5)) });
+    expect(first.elements[0].kind).toBe("AUTHORIZATION");
+    expect(fake.requests.every((r) => r.method === "GET" && r.path === "/card_payments")).toBe(true);
+  });
+
+  it("lists our account's ACH transfers in the window; updatedAt is their latest step", async () => {
+    const fake = createFakeIncrease();
+    const transferFrom = (sourceAccountId: string, idempotencyKey: string) =>
+      fake.adapter.createTransfer({
+        sourceAccountId,
+        amountCents: 10000,
+        accountNumber: "987654321",
+        routingNumber: "101050001",
+        recipientName: "Globex",
+        statementDescriptor: "Invoice",
+        idempotencyKey,
+      });
+    const created = await transferFrom("account_1", "payment-1");
+    const other = await transferFrom("account_someone_else", "theirs-1");
+    for (const id of [created.id, other.id]) fake.achTransfers.get(id)!.created_at = "2026-11-07T01:00:00Z";
+    const transfer = fake.achTransfers.get(created.id)!;
+    transfer.settlement = { settled_at: "2026-11-07T03:00:00Z" };
+    transfer.status = "submitted";
+    const { items, requestIds } = await fake.adapter.listTransfers(window, { accountId: "account_1" });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: created.id, idempotencyKey: "payment-1", createdAt: new Date("2026-11-07T01:00:00Z"), updatedAt: new Date("2026-11-07T03:00:00Z") });
+    expect(items[0].snapshot.settled).toBe(true);
+    expect(JSON.stringify(items[0])).not.toContain("987654321");
+    expect(requestIds).toHaveLength(1);
+  });
+
+  it("fails a list read as a PaymentProviderError, and stops once the deadline passes", async () => {
+    const fake = createFakeIncrease();
+    fake.next = "error";
+    await expect(fake.adapter.listCardPayments(window, { cardId: card })).rejects.toThrow("Increase list card payments failed: internal_server_error");
+    const aborted = AbortSignal.abort();
+    await expect(fake.adapter.listTransfers(window, { accountId: "account_1" }, aborted)).rejects.toThrow("deadline passed");
+  });
+
+  it("retrieves a card payment and a transfer with their created and last-changed times", async () => {
+    const fake = createFakeIncrease();
+    const elements = (authorized as unknown as CardPaymentJson).elements.map((e) => ({ ...e, created_at: at(30) }));
+    seedCardPayment(fake, { ...(authorized as unknown as CardPaymentJson), id: "card_payment_old", created_at: at(0), elements });
+    expect(await fake.adapter.retrieveCardPayment("card_payment_old")).toMatchObject({ id: "card_payment_old", createdAt: new Date(at(0)), updatedAt: new Date(at(30)) });
+    fake.achTransfers.set("ach_transfer_old", { ...(structuredClone(achReturned) as AchTransferJson), id: "ach_transfer_old" });
+    const transfer = await fake.adapter.retrieveTransfer("ach_transfer_old");
+    expect(transfer.updatedAt.getTime()).toBeGreaterThanOrEqual(transfer.createdAt.getTime());
+    expect(transfer.snapshot.returned).not.toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import type { CardPaymentElement } from "../domain/cards";
-import type { WebhookVerifier } from "./payment-provider";
+import type { ListResult, ListWindow, WebhookVerifier } from "./payment-provider";
 
 /**
  * What the application needs from a card issuer. Adapters in `integrations/<provider>`
@@ -19,6 +19,9 @@ export interface ProviderCardPayment {
   requestId: string | null;
 }
 
+/** A card payment as read for reconciliation: when the provider created it and its latest element. */
+export type ListedCardPayment = ProviderCardPayment & { createdAt: Date; updatedAt: Date };
+
 export interface SimulateAuthorizationInput {
   /** The provider's card id. */
   cardId: string;
@@ -37,7 +40,9 @@ export interface SimulationResult {
 export interface CardProvider extends WebhookVerifier {
   /** Our provider name, as stored in `transactions.provider` and `external_events.provider`. */
   readonly name: string;
-  retrieveCardPayment(id: string): Promise<ProviderCardPayment>;
+  retrieveCardPayment(id: string): Promise<ListedCardPayment>;
+  /** Every card payment on card `filter.cardId` created in `window`, for reconciliation; stops between pages once `signal` aborts. */
+  listCardPayments(window: ListWindow, filter: { cardId: string }, signal?: AbortSignal): Promise<ListResult<ListedCardPayment>>;
   /** Sandbox only: the steps a merchant and the network would take. Effects arrive by webhook. */
   simulateAuthorization(input: SimulateAuthorizationInput): Promise<SimulationResult>;
   /** Settles the payment's authorization for `amountCents` (may differ from the authorized amount). */
