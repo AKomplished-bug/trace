@@ -5,6 +5,8 @@ import { defineConfig } from "vitest/config";
 if (existsSync(".env")) process.loadEnvFile(".env");
 
 export default defineConfig({
+  // The tsconfig "@/*" path, for the shadcn components.
+  resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
   test: {
     include: ["src/**/*.test.ts"],
     globalSetup: ["src/db/test-global-setup.ts"],

@@ -1,15 +1,19 @@
 import Link from "next/link";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import { reconciliationStatus } from "../../../db/schema";
 import { getReconciliationOverview } from "../../../services/reconciliation-queries";
 import { apiDeps } from "../../api/deps";
-import { providerLabel, TYPE_LABELS } from "../../_components/labels";
+import { FilterBar, SelectFilter } from "../../_components/filters";
+import { providerLabel, RECONCILIATION_STATUS_LABELS, RECONCILIATION_STATUS_TONES, TYPE_LABELS } from "../../_components/labels";
 import { LocalTime } from "../../_components/local-time";
 import { Money } from "../../_components/money";
+import { EmptyState, linkClass, Notice, PageHeader, Panel } from "../../_components/page-parts";
 import { ReconciliationStatusBadge, RunStatusBadge } from "../../_components/status-badge";
 import { requirePageSession } from "../../_lib/auth";
 import { DEFAULT_RECONCILIATION_DAYS, RECONCILIATION_PROVIDERS, reconciliationListQuery } from "../../_lib/schemas";
-import { ActionButton } from "./action-button";
 import { InvestigationAction } from "./investigation-action";
+import { RunReconciliation } from "./run-actions";
 
 export const metadata = { title: "Reconciliation · Trace" };
 
@@ -18,8 +22,6 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 function first(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
-
-const control = "rounded border border-neutral-300 bg-white px-2 py-1";
 
 export default async function ReconciliationPage({ searchParams }: { searchParams: SearchParams }) {
   await requirePageSession("OPS");
@@ -30,168 +32,167 @@ export default async function ReconciliationPage({ searchParams }: { searchParam
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">Reconciliation</h1>
-          <p className="text-sm text-neutral-600">
-            Our transactions against the records each provider&apos;s API returns. Each run covers the last {DEFAULT_RECONCILIATION_DAYS} days.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {RECONCILIATION_PROVIDERS.map((provider) => (
-            <ActionButton
-              key={provider}
-              url="/api/ops/reconciliation/run"
-              body={{ provider }}
-              label={`Reconcile ${providerLabel(provider)}`}
-              pendingLabel="Requesting…"
-              open="run"
-            />
-          ))}
-        </div>
-      </div>
+      <PageHeader
+        title="Reconciliation"
+        description={`Our transactions against the records each provider's API returns. Each run covers the last ${DEFAULT_RECONCILIATION_DAYS} days.`}
+        actions={RECONCILIATION_PROVIDERS.map((provider, i) => (
+          <RunReconciliation key={provider} provider={provider} variant={i === 0 ? "default" : "outline"} />
+        ))}
+      />
 
       {!overview ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <Notice>
           That filter isn&apos;t valid.{" "}
-          <Link href="/ops/reconciliation" className="underline">
+          <Link href="/ops/reconciliation" className={linkClass}>
             Show all exceptions
           </Link>
-        </div>
+        </Notice>
       ) : (
         <>
-          <section className="rounded-md border border-neutral-200 bg-white p-5">
-            <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Latest successful run per provider</p>
-            <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+          <section aria-labelledby="latest-heading" className="space-y-3">
+            <h2 id="latest-heading" className="text-base font-semibold">
+              Latest successful run per provider
+            </h2>
+            <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
               {reconciliationStatus.enumValues.map((status) => {
-                const alert = status !== "MATCHED" && status !== "PENDING_EXTERNAL" && overview.counts[status] > 0;
+                const alert = RECONCILIATION_STATUS_TONES[status] === "danger" && overview.counts[status] > 0;
                 return (
-                  <Link
-                    key={status}
-                    href={`/ops/reconciliation?status=${status}`}
-                    className={`rounded border px-3 py-2 hover:bg-neutral-50 ${alert ? "border-red-200 bg-red-50/60" : "border-neutral-200"} ${filter === status ? "ring-2 ring-neutral-400" : ""}`}
-                  >
-                    <ReconciliationStatusBadge status={status} />
-                    <span className={`mt-1 block font-mono text-2xl tabular-nums ${alert ? "text-red-800" : ""}`}>{overview.counts[status]}</span>
-                  </Link>
+                  <li key={status}>
+                    <Link
+                      href={`/ops/reconciliation?status=${status}`}
+                      aria-current={filter === status ? "true" : undefined}
+                      className={cn(
+                        "block h-full rounded-xl border bg-card px-3 py-2.5 hover:bg-muted/60",
+                        alert && "border-danger-line/70 shadow-[inset_3px_0_0_var(--danger-line)]",
+                        filter === status && "ring-2 ring-ring",
+                      )}
+                    >
+                      <span className="block text-xs text-muted-foreground">{RECONCILIATION_STATUS_LABELS[status]}</span>
+                      <span className={cn("mt-1 block text-2xl font-semibold tabular-nums", alert && "text-danger")}>{overview.counts[status]}</span>
+                    </Link>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
           </section>
 
-          <section className="overflow-hidden rounded-md border border-neutral-200 bg-white">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-100 px-4 py-2.5">
-              <div>
-                <h2 className="text-sm font-semibold">{filter ? `${filter} records` : "Open exceptions"}</h2>
-                <p className="text-xs text-neutral-500">Everything but MATCHED that no one has resolved yet, oldest first.</p>
-              </div>
-              <form method="get" action="/ops/reconciliation" className="flex items-center gap-2 text-sm">
-                <select name="status" defaultValue={filter ?? ""} aria-label="Status" className={control}>
-                  <option value="">All exceptions</option>
-                  {reconciliationStatus.enumValues.map((status) => (
-                    <option key={status} value={status}>
-                      {status}
-                    </option>
-                  ))}
-                </select>
-                <button type="submit" className="rounded bg-neutral-900 px-3 py-1 font-medium text-white hover:bg-neutral-700">
-                  Apply
-                </button>
-              </form>
+          <section aria-labelledby="exceptions-heading" className="space-y-3">
+            <div>
+              <h2 id="exceptions-heading" className="text-base font-semibold">
+                {filter ? RECONCILIATION_STATUS_LABELS[filter] : "Open exceptions"}
+              </h2>
+              <p className="text-sm text-muted-foreground">Everything but matched that no one has resolved yet, oldest first.</p>
             </div>
+            <FilterBar action="/ops/reconciliation" label="Filter exceptions" filtered={Boolean(filter)}>
+              <SelectFilter
+                name="status"
+                label="Result"
+                value={filter ?? ""}
+                allLabel="All exceptions"
+                options={reconciliationStatus.enumValues.map((status) => ({ value: status, label: RECONCILIATION_STATUS_LABELS[status] }))}
+              />
+            </FilterBar>
             {overview.exceptions.length === 0 ? (
-              <p className="px-4 py-8 text-center text-sm text-neutral-600">
-                {overview.latestRunIds.length === 0 ? "No reconciliation has finished yet." : "Nothing here: every record in the latest runs matches or is resolved."}
-              </p>
+              <EmptyState title={overview.latestRunIds.length === 0 ? "No reconciliation has finished yet" : "Nothing to work on"}>
+                {overview.latestRunIds.length === 0
+                  ? "Reconcile a provider to start a run; the worker picks it up."
+                  : "Every record in the latest runs matches or is resolved."}
+              </EmptyState>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="border-b border-neutral-200 bg-neutral-50 text-left text-xs text-neutral-500">
-                    <tr>
-                      <th className="px-4 py-2 font-medium">Status</th>
-                      <th className="px-4 py-2 font-medium">Business</th>
-                      <th className="px-4 py-2 font-medium">Transaction</th>
-                      <th className="px-4 py-2 text-right font-medium">Internal</th>
-                      <th className="px-4 py-2 text-right font-medium">External</th>
-                      <th className="px-4 py-2 text-right font-medium">Difference</th>
-                      <th className="px-4 py-2 font-medium">Detected</th>
-                      <th className="px-4 py-2 font-medium" />
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-100">
+              <div className="overflow-hidden rounded-xl border bg-card">
+                <Table>
+                  <caption className="sr-only">Open reconciliation exceptions</caption>
+                  <TableHeader className="bg-muted/50">
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className="px-4 text-xs text-muted-foreground">Result</TableHead>
+                      <TableHead className="px-4 text-xs text-muted-foreground">Transaction</TableHead>
+                      <TableHead className="hidden px-4 text-xs text-muted-foreground lg:table-cell">Business</TableHead>
+                      <TableHead className="hidden px-4 text-right text-xs text-muted-foreground md:table-cell">Trace</TableHead>
+                      <TableHead className="hidden px-4 text-right text-xs text-muted-foreground md:table-cell">Provider</TableHead>
+                      <TableHead className="px-4 text-right text-xs text-muted-foreground">Difference</TableHead>
+                      <TableHead className="hidden px-4 text-xs text-muted-foreground xl:table-cell">Detected</TableHead>
+                      <TableHead className="px-4 text-right text-xs text-muted-foreground">
+                        <span className="sr-only">Actions</span>
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {overview.exceptions.map((e) => (
-                      <tr key={e.id} className="align-top">
-                        <td className="px-4 py-2.5">
+                      <TableRow key={e.id} className="align-top">
+                        <TableCell className="px-4 py-3">
                           <ReconciliationStatusBadge status={e.status} />
-                          {e.reason && <span className="block font-mono text-xs text-neutral-500">{e.reason}</span>}
-                        </td>
-                        <td className="px-4 py-2.5">{e.businessName ?? "—"}</td>
-                        <td className="px-4 py-2.5">
-                          {TYPE_LABELS[e.transactionType]} <span className="text-xs text-neutral-500">· {providerLabel(e.provider)}</span>
-                          <span className="block font-mono text-xs text-neutral-500">
+                          {e.reason && <span className="mt-1 block font-mono text-xs text-muted-foreground">{e.reason}</span>}
+                        </TableCell>
+                        <TableCell className="px-4 py-3 whitespace-normal">
+                          {TYPE_LABELS[e.transactionType]} <span className="text-xs text-muted-foreground">({providerLabel(e.provider)})</span>
+                          <span className="block font-mono text-xs break-all text-muted-foreground">
                             {e.transactionId ? e.transactionId.slice(0, 8) : "not in Trace"} ↔ {e.externalId ?? "not at provider"}
                           </span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right">{e.internalAmountCents === null ? "—" : <Money cents={e.internalAmountCents} />}</td>
-                        <td className="px-4 py-2.5 text-right">{e.externalAmountCents === null ? "—" : <Money cents={e.externalAmountCents} />}</td>
-                        <td className="px-4 py-2.5 text-right">{e.differenceCents ? <Money cents={e.differenceCents} signed /> : "—"}</td>
-                        <td className="whitespace-nowrap px-4 py-2.5 text-xs text-neutral-500">
+                        </TableCell>
+                        <TableCell className="hidden px-4 py-3 lg:table-cell">{e.businessName ?? "—"}</TableCell>
+                        <TableCell className="hidden px-4 py-3 text-right md:table-cell">{e.internalAmountCents === null ? "—" : <Money cents={e.internalAmountCents} />}</TableCell>
+                        <TableCell className="hidden px-4 py-3 text-right md:table-cell">{e.externalAmountCents === null ? "—" : <Money cents={e.externalAmountCents} />}</TableCell>
+                        <TableCell className="px-4 py-3 text-right font-medium">{e.differenceCents ? <Money cents={e.differenceCents} signed className="text-foreground" /> : "—"}</TableCell>
+                        <TableCell className="hidden px-4 py-3 text-xs text-muted-foreground xl:table-cell">
                           <LocalTime value={e.createdAt} />
-                        </td>
-                        <td className="space-y-1 px-4 py-2.5 text-right">
+                        </TableCell>
+                        <TableCell className="space-y-1 px-4 py-3 text-right">
                           <InvestigationAction recordId={e.id} investigationId={e.investigationId} />
-                          <Link href={`/ops/reconciliation/${e.runId}#record-${e.id}`} className="block text-xs text-neutral-600 hover:text-neutral-900">
-                            Run →
+                          <Link href={`/ops/reconciliation/${e.runId}#record-${e.id}`} className={`block text-xs ${linkClass}`}>
+                            View in run
                           </Link>
-                        </td>
-                      </tr>
+                        </TableCell>
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
+                  </TableBody>
+                </Table>
               </div>
             )}
           </section>
 
-          <section className="overflow-hidden rounded-md border border-neutral-200 bg-white">
-            <h2 className="border-b border-neutral-100 px-4 py-2.5 text-sm font-semibold">Recent runs</h2>
+          <Panel title="Recent runs" flush>
             {overview.runs.length === 0 ? (
-              <p className="px-4 py-8 text-center text-sm text-neutral-600">No runs yet. Reconcile a provider to start one; the worker picks it up.</p>
+              <p className="px-4 py-8 text-center text-sm text-muted-foreground">No runs yet. Reconcile a provider to start one; the worker picks it up.</p>
             ) : (
-              <table className="w-full text-sm">
-                <thead className="border-b border-neutral-200 bg-neutral-50 text-left text-xs text-neutral-500">
-                  <tr>
-                    <th className="px-4 py-2 font-medium">Requested</th>
-                    <th className="px-4 py-2 font-medium">Provider</th>
-                    <th className="px-4 py-2 font-medium">Window</th>
-                    <th className="px-4 py-2 font-medium">Status</th>
-                    <th className="px-4 py-2 text-right font-medium">Matched</th>
-                    <th className="px-4 py-2 text-right font-medium">Exceptions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-100">
+              <Table>
+                <caption className="sr-only">Recent reconciliation runs</caption>
+                <TableHeader className="bg-muted/50">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="px-4 text-xs text-muted-foreground">Requested</TableHead>
+                    <TableHead className="px-4 text-xs text-muted-foreground">Provider</TableHead>
+                    <TableHead className="hidden px-4 text-xs text-muted-foreground lg:table-cell">Window</TableHead>
+                    <TableHead className="px-4 text-xs text-muted-foreground">Status</TableHead>
+                    <TableHead className="hidden px-4 text-right text-xs text-muted-foreground sm:table-cell">Matched</TableHead>
+                    <TableHead className="hidden px-4 text-right text-xs text-muted-foreground sm:table-cell">Exceptions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {overview.runs.map((run) => (
-                    <tr key={run.id} className="relative align-top hover:bg-neutral-50">
-                      <td className="whitespace-nowrap px-4 py-2.5 text-xs">
-                        <Link href={`/ops/reconciliation/${run.id}`} className="after:absolute after:inset-0">
+                    <TableRow key={run.id} className="relative align-top">
+                      <TableCell className="px-4 py-3 text-xs">
+                        <Link
+                          href={`/ops/reconciliation/${run.id}`}
+                          className="font-medium outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
+                        >
                           <LocalTime value={run.createdAt} />
                         </Link>
-                      </td>
-                      <td className="px-4 py-2.5">{providerLabel(run.provider)}</td>
-                      <td className="px-4 py-2.5 text-xs text-neutral-600">
-                        <LocalTime value={run.windowStart} /> → <LocalTime value={run.windowEnd} />
-                      </td>
-                      <td className="px-4 py-2.5">
+                      </TableCell>
+                      <TableCell className="px-4 py-3">{providerLabel(run.provider)}</TableCell>
+                      <TableCell className="hidden px-4 py-3 text-xs text-muted-foreground lg:table-cell">
+                        <LocalTime value={run.windowStart} /> to <LocalTime value={run.windowEnd} />
+                      </TableCell>
+                      <TableCell className="px-4 py-3">
                         <RunStatusBadge status={run.status} />
-                        {run.lastError && <span className="block max-w-xs truncate text-xs text-red-700">{run.lastError}</span>}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono tabular-nums">{run.matchedCount ?? "—"}</td>
-                      <td className="px-4 py-2.5 text-right font-mono tabular-nums">{run.exceptionCount ?? "—"}</td>
-                    </tr>
+                        {run.lastError && <span className="mt-1 block max-w-xs truncate text-xs text-danger">{run.lastError}</span>}
+                      </TableCell>
+                      <TableCell className="hidden px-4 py-3 text-right tabular-nums sm:table-cell">{run.matchedCount ?? "—"}</TableCell>
+                      <TableCell className="hidden px-4 py-3 text-right tabular-nums sm:table-cell">{run.exceptionCount ?? "—"}</TableCell>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
+                </TableBody>
+              </Table>
             )}
-          </section>
+          </Panel>
         </>
       )}
     </div>
