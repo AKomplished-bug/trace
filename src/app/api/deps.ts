@@ -5,6 +5,7 @@ import { STRIPE_PROVIDER, StripeAdapter } from "../../integrations/stripe";
 import { config } from "../../lib/config";
 import { safeErrorForLog } from "../../lib/errors";
 import { logger } from "../../lib/logger";
+import { startCounterFlush } from "../../services/metrics";
 
 export interface ApiDeps {
   db: Db;
@@ -30,8 +31,11 @@ export function apiDeps(): ApiDeps {
     const pool = createPool(env.DATABASE_URL);
     // An idle client losing its connection must not crash the web process.
     pool.on("error", (error) => logger.error({ err: safeErrorForLog(error) }, "idle database client error"));
+    const db = createDb(pool);
+    // This process's outcome counters (webhooks, funding requests, Ops retries) go to the same table as the worker's.
+    startCounterFlush(db, logger);
     cache.traceApiDeps = {
-      db: createDb(pool),
+      db,
       stripe,
       increase,
       webhookVerifiers: { [STRIPE_PROVIDER]: stripe, [INCREASE_PROVIDER]: increase },

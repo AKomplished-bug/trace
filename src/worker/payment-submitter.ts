@@ -6,6 +6,7 @@ import type { TransferProvider } from "../integrations/transfer-provider";
 import { safeErrorForLog, safeErrorMessage } from "../lib/errors";
 import type { Logger } from "../lib/logger";
 import { lockAccount } from "../services/accounts";
+import { countOutcome } from "../services/metrics";
 import {
   DEFAULT_STATEMENT_DESCRIPTOR,
   failPayment,
@@ -77,6 +78,11 @@ export type SubmitOutcome =
   | "retry"
   | "lease_lost";
 
+/** `payment_submissions_total{outcome}`. */
+function countSubmission(outcome: Exclude<SubmitOutcome, "rejected"> | "rejected_first_attempt"): void {
+  countOutcome("payment_submissions_total", { outcome });
+}
+
 /** Our claim on the payment, unchanged since we took it. */
 function claimed(payment: ClaimedPayment) {
   return and(eq(payments.id, payment.id), eq(payments.status, "PENDING"), eq(payments.submitClaimToken, payment.claimToken));
@@ -92,6 +98,7 @@ export async function submitPayment(db: Db, claim: ClaimedPayment, provider: Tra
     .where(claimed(claim));
   if (!intent) {
     log.warn({ outcome: "lease_lost" }, "payment claim lost or payment moved on; skipped");
+    countSubmission("lease_lost");
     return "lease_lost";
   }
   const { payment, sourceAccountId } = intent;
@@ -131,8 +138,10 @@ export async function submitPayment(db: Db, claim: ClaimedPayment, provider: Tra
     });
     if (recorded === "lease_lost") {
       txLog.warn({ outcome: "lease_lost" }, "transfer created but the claim was lost; the current owner records it with the same key");
+      countSubmission("lease_lost");
       return "lease_lost";
     }
+    countSubmission("submitted");
     txLog.info({ outcome: recorded, queue_age_seconds: queueAgeSeconds }, "payment accepted by provider");
     return "submitted";
   } catch (error) {
@@ -164,8 +173,10 @@ async function retry(db: Db, claim: ClaimedPayment, log: Logger, message: string
     .returning({ id: payments.id });
   if (!updated.length) {
     log.warn({ outcome: "lease_lost", err: safeErrorForLog(error) }, "payment submission failed after its claim was lost");
+    countSubmission("lease_lost");
     return "lease_lost";
   }
+  countSubmission("retry");
   log.warn({ outcome: "retry", err: safeErrorForLog(error), retry_in_seconds: delaySeconds }, "payment submission failed; will retry with the same idempotency key");
   return "retry";
 }
@@ -181,8 +192,10 @@ async function reject(db: Db, claim: ClaimedPayment, log: Logger, message: strin
   const err = error === undefined ? undefined : safeErrorForLog(error);
   if (!done) {
     log.warn({ outcome: "lease_lost", err, error_message: message }, "payment failed after its claim was lost; left to the new owner");
+    countSubmission("lease_lost");
     return "lease_lost";
   }
+  countSubmission("rejected_first_attempt");
   log.error({ outcome: "rejected", err, error_message: message }, "provider refused the payment; FAILED and hold released");
   return "rejected";
 }
@@ -204,8 +217,10 @@ async function giveUp(db: Db, claim: ClaimedPayment, log: Logger, message: strin
   const err = error === undefined ? undefined : safeErrorForLog(error);
   if (!done) {
     log.warn({ outcome: "lease_lost", err, error_message: message }, "payment submission gave up after its claim was lost; left to the new owner");
+    countSubmission("lease_lost");
     return "lease_lost";
   }
+  countSubmission("gave_up");
   log.error({ outcome: "gave_up", err, error_message: message }, "payment submission gave up with the outcome unknown; PENDING with its hold, for Ops");
   return "gave_up";
 }

@@ -4,6 +4,7 @@ import { accounts, holds, ledgerEntries, payments, transactionEvents, transactio
 import { accountMismatches, moneyGraph, replayAccount, replayTransaction, type Balances, type Divergence, type ReplayEvent } from "../domain/replay";
 import { logger as rootLogger, type Logger } from "../lib/logger";
 import { READ_SNAPSHOT, readBalance } from "./account-queries";
+import { countOutcome } from "./metrics";
 import { readDetail, readTimeline, type TimelineStep, type TransactionDetail } from "./transaction-queries";
 
 /**
@@ -14,9 +15,8 @@ import { readDetail, readTimeline, type TimelineStep, type TransactionDetail } f
 const ZERO: Balances = { ledgerCents: 0, availableCents: 0 };
 
 /**
- * The one place a replay mismatch is reported, whoever read it (API, transaction page, /balance).
- * Only mismatches are logged; this is where a `replay_checks_total{scope,outcome}` counter goes
- * once there is a metrics module.
+ * The one place a replay mismatch is reported, whoever read it (API, transaction page, /balance):
+ * logged and counted in `replay_mismatch_total{scope}`. Matches are neither.
  */
 function reportReplayMismatch(
   log: Logger,
@@ -24,6 +24,7 @@ function reportReplayMismatch(
   fields: { accountId: string; transactionId: string | null; divergence: Divergence | null; mismatches?: string[] },
 ) {
   const { divergence } = fields;
+  countOutcome("replay_mismatch_total", { scope });
   log.warn(
     {
       outcome: "replay_mismatch",

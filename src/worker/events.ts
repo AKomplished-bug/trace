@@ -3,6 +3,7 @@ import { withTransaction, type Db } from "../db/client";
 import { externalEvents } from "../db/schema";
 import { PermanentEventError, safeErrorForLog, safeErrorMessage } from "../lib/errors";
 import type { Logger } from "../lib/logger";
+import { countAfterCommit, countOutcome } from "../services/metrics";
 import { handlerKey, type EventRouting } from "./handlers";
 
 /** 10 attempts with backoff 5 s, 10 s … capped at 15 min: about 36 minutes before FAILED. */
@@ -134,6 +135,7 @@ export async function processEvent(
       .where(claimed(event))
       .returning({ id: externalEvents.id });
     const outcome = updated.length ? "ignored" : "lease_lost";
+    countProcessed(event, outcome);
     log.info({ outcome }, "event type ignored for this provider");
     return outcome;
   }
@@ -158,24 +160,34 @@ export async function processEvent(
       : undefined;
 
     // Phase 2: effects and the PROCESSED mark commit together, only if we still own the claim.
-    await withTransaction(db, async (tx) => {
-      const [row] = await tx.select().from(externalEvents).where(claimed(event)).for("update");
-      if (!row) throw new LeaseLostError();
-      await handler.apply(tx, row, fetched, log);
-      await tx
-        .update(externalEvents)
-        .set({ status: "PROCESSED", processedAt: sql`now()`, lastError: null })
-        .where(eq(externalEvents.id, event.id));
-    });
+    // Outcomes the handler counts are kept only if this transaction commits.
+    await countAfterCommit(() =>
+      withTransaction(db, async (tx) => {
+        const [row] = await tx.select().from(externalEvents).where(claimed(event)).for("update");
+        if (!row) throw new LeaseLostError();
+        await handler.apply(tx, row, fetched, log);
+        await tx
+          .update(externalEvents)
+          .set({ status: "PROCESSED", processedAt: sql`now()`, lastError: null })
+          .where(eq(externalEvents.id, event.id));
+      }),
+    );
+    countProcessed(event, "processed");
     log.info({ outcome: "processed" }, "event processed");
     return "processed";
   } catch (error) {
     if (error instanceof LeaseLostError) {
+      countProcessed(event, "lease_lost");
       log.warn({ outcome: "lease_lost" }, "event claim lost to another worker; skipped");
       return "lease_lost";
     }
     return fail(db, event, log, safeErrorMessage(error), error);
   }
+}
+
+/** `events_processed_total{provider,type,outcome}`; outcome "permanent" is a FAILED from a PermanentEventError. */
+function countProcessed(event: ClaimedEvent, outcome: ProcessOutcome | "permanent"): void {
+  countOutcome("events_processed_total", { provider: event.provider, type: event.eventType, outcome });
 }
 
 async function fail(
@@ -199,10 +211,12 @@ async function fail(
     .returning({ id: externalEvents.id });
   const err = error === undefined ? undefined : safeErrorForLog(error);
   if (!updated.length) {
+    countProcessed(event, "lease_lost");
     log.warn({ outcome: "lease_lost", err, error_message: message }, "event failed after its claim was lost; left to the new owner");
     return "lease_lost";
   }
   const outcome = terminal ? "failed" : "retry";
+  countProcessed(event, permanent ? "permanent" : outcome);
   log.error(
     { outcome, err, error_message: message, permanent, retry_in_seconds: terminal ? undefined : delaySeconds },
     terminal ? "event failed permanently" : "event failed; will retry",
