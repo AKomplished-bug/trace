@@ -1,5 +1,5 @@
 import type { TransferSnapshot } from "../domain/payments";
-import type { WebhookVerifier } from "./payment-provider";
+import type { ListResult, ListWindow, WebhookVerifier } from "./payment-provider";
 
 /**
  * What the application needs from a bank-transfer provider for outbound payments. Adapters in
@@ -23,6 +23,9 @@ export interface ProviderTransfer {
   requestId: string | null;
 }
 
+/** A transfer as read for reconciliation: when the provider created it and its latest step. */
+export type ListedTransfer = ProviderTransfer & { createdAt: Date; updatedAt: Date };
+
 export interface CreateTransferInput {
   /** The provider account the money leaves from (`accounts.provider_id`). */
   sourceAccountId: string;
@@ -39,9 +42,11 @@ export interface TransferProvider extends WebhookVerifier {
   /** Our provider name, as stored in `transactions.provider` and `payments.provider`. */
   readonly name: string;
   createTransfer(input: CreateTransferInput): Promise<ProviderTransfer>;
-  retrieveTransfer(id: string): Promise<ProviderTransfer>;
+  retrieveTransfer(id: string): Promise<ListedTransfer>;
   /** The transfer created with our idempotency key, or null if the provider has none. */
   findTransferByIdempotencyKey(idempotencyKey: string): Promise<ProviderTransfer | null>;
+  /** Every outbound transfer from provider account `filter.accountId` created in `window`, for reconciliation; stops between pages once `signal` aborts. */
+  listTransfers(window: ListWindow, filter: { accountId: string }, signal?: AbortSignal): Promise<ListResult<ListedTransfer>>;
   /** Sandbox only: the network steps. Effects arrive by webhook. */
   simulateTransferSubmission(id: string): Promise<ProviderTransfer>;
   simulateTransferSettlement(id: string): Promise<ProviderTransfer>;

@@ -2,9 +2,13 @@ import Stripe from "stripe";
 import { z } from "zod";
 import type { FundingEvent } from "../../domain/funding";
 import {
+  MAX_LIST_PAGES,
   PaymentProviderError,
   WebhookVerificationError,
   type CreateFundingPaymentInput,
+  type ListedPayment,
+  type ListResult,
+  type ListWindow,
   type PaymentProvider,
   type ProviderPayment,
   type VerifiedWebhook,
@@ -122,6 +126,33 @@ export class StripeAdapter implements PaymentProvider {
       return toProviderPayment(intent, intent.lastResponse.requestId ?? null);
     } catch (error) {
       throw providerError(`retrieve PaymentIntent ${id}`, error);
+    }
+  }
+
+  /**
+   * https://docs.stripe.com/api/payment_intents/list: newest first, `created[gte]` / `created[lt]`
+   * in Unix seconds (so the window is widened to whole seconds), up to 100 per page, next page via
+   * `starting_after` = the last id while `has_more`. Each page has the SDK timeout.
+   */
+  async listPayments(window: ListWindow, signal?: AbortSignal): Promise<ListResult<ListedPayment>> {
+    const result: ListResult<ListedPayment> = { items: [], requestIds: [] };
+    const created = { gte: Math.floor(window.start.getTime() / 1000), lt: Math.ceil(window.end.getTime() / 1000) };
+    let startingAfter: string | undefined;
+    for (let page = 1; ; page++) {
+      if (page > MAX_LIST_PAGES) throw new PaymentProviderError(`Stripe list PaymentIntents stopped: more than ${MAX_LIST_PAGES} pages`, null);
+      if (signal?.aborted) throw new PaymentProviderError("Stripe list PaymentIntents stopped: deadline passed", null);
+      let list: Stripe.Response<Stripe.ApiList<Stripe.PaymentIntent>>;
+      try {
+        list = await this.stripe().paymentIntents.list({ created, limit: 100, ...(startingAfter ? { starting_after: startingAfter } : {}) });
+      } catch (error) {
+        throw providerError("list PaymentIntents", error);
+      }
+      const requestId = list.lastResponse.requestId ?? null;
+      result.requestIds.push(requestId);
+      for (const intent of list.data) result.items.push({ ...toProviderPayment(intent, requestId), createdAt: new Date(intent.created * 1000) });
+      const last = list.data.at(-1);
+      if (!list.has_more || !last) return result;
+      startingAfter = last.id;
     }
   }
 

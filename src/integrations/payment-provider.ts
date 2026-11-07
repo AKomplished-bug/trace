@@ -45,6 +45,24 @@ export interface ProviderPayment {
   requestId: string | null;
 }
 
+/** A created-at window for list reads: [start, end). */
+export interface ListWindow {
+  start: Date;
+  end: Date;
+}
+
+/** Every item of a paginated list read, and the provider request id of each page (for logs). */
+export interface ListResult<T> {
+  items: T[];
+  requestIds: Array<string | null>;
+}
+
+/** List reads stop with an error past this many pages (of 100) instead of loading an unbounded window. */
+export const MAX_LIST_PAGES = 50;
+
+/** A payment from a list read, with when the provider created it. */
+export type ListedPayment = ProviderPayment & { createdAt: Date };
+
 export interface CreateFundingPaymentInput {
   amountCents: number;
   /** Sent to the provider so retries of the same funding never create a second payment. */
@@ -98,4 +116,9 @@ export interface PaymentProvider extends WebhookVerifier {
   createFundingPayment(input: CreateFundingPaymentInput): Promise<ProviderPayment>;
   /** Throws `PaymentProviderError` on failure. */
   retrievePaymentIntent(id: string): Promise<ProviderPayment>;
+  /**
+   * Every payment created in `window`, for reconciliation. Stops between pages once `signal`
+   * aborts; throws `PaymentProviderError` on failure or past `MAX_LIST_PAGES`.
+   */
+  listPayments(window: ListWindow, signal?: AbortSignal): Promise<ListResult<ListedPayment>>;
 }

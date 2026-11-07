@@ -2,9 +2,18 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import Increase, { APIError } from "increase";
 import { z } from "zod";
 import type { CardPaymentElement } from "../../domain/cards";
-import type { CardProvider, ProviderCardPayment, SimulateAuthorizationInput, SimulationResult } from "../card-provider";
-import { IdempotencyKeyReusedError, PaymentProviderError, ProviderRejectedError, WebhookVerificationError, type VerifiedWebhook } from "../payment-provider";
-import type { CreateTransferInput, ProviderTransfer, TransferProvider } from "../transfer-provider";
+import type { CardProvider, ListedCardPayment, ProviderCardPayment, SimulateAuthorizationInput, SimulationResult } from "../card-provider";
+import {
+  IdempotencyKeyReusedError,
+  MAX_LIST_PAGES,
+  PaymentProviderError,
+  ProviderRejectedError,
+  WebhookVerificationError,
+  type ListResult,
+  type ListWindow,
+  type VerifiedWebhook,
+} from "../payment-provider";
+import type { CreateTransferInput, ListedTransfer, ProviderTransfer, TransferProvider } from "../transfer-provider";
 
 export const INCREASE_PROVIDER = "increase";
 /** Every Increase call has this deadline unless overridden; the SDK default is 60 s. */
@@ -192,6 +201,24 @@ export function toProviderTransfer(transfer: Increase.ACHTransfer, requestId: st
   };
 }
 
+/** A card payment with when it was created and last changed (it has no update time: its latest element). */
+export function toListedCardPayment(payment: Increase.CardPayment, requestId: string | null): ListedCardPayment {
+  return {
+    ...toProviderCardPayment(payment, requestId),
+    createdAt: new Date(payment.created_at),
+    updatedAt: latest(payment.created_at, ...payment.elements.map((e) => e.created_at)),
+  };
+}
+
+/** A transfer with when it was created and last changed (no update time: the latest of creation, submission, settlement, return). */
+export function toListedTransfer(transfer: Increase.ACHTransfer, requestId: string | null): ListedTransfer {
+  return {
+    ...toProviderTransfer(transfer, requestId),
+    createdAt: new Date(transfer.created_at),
+    updatedAt: latest(transfer.created_at, transfer.submission?.submitted_at, transfer.settlement?.settled_at, transfer.return?.created_at),
+  };
+}
+
 /**
  * Increase sandbox through the `CardProvider` and `TransferProvider` interfaces. Always the sandbox environment, so a
  * production key fails instead of moving real money. Retries are ours, so the SDK never retries.
@@ -216,9 +243,23 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
     return { externalEventId: event.data.id, eventType: event.data.category, payload };
   }
 
-  async retrieveCardPayment(id: string): Promise<ProviderCardPayment> {
+  async retrieveCardPayment(id: string): Promise<ListedCardPayment> {
     const { payment, requestId } = await this.fetchCardPayment(id);
-    return toProviderCardPayment(payment, requestId);
+    return toListedCardPayment(payment, requestId);
+  }
+
+  /**
+   * https://increase.com/documentation/api/card-payments#list-card-payments, filtered by
+   * `created_at.on_or_after` / `created_at.before`. A card payment has no update time, so
+   * `updatedAt` is its latest element's `created_at`.
+   */
+  async listCardPayments(window: ListWindow, filter: { cardId: string }, signal?: AbortSignal): Promise<ListResult<ListedCardPayment>> {
+    return this.listAll(
+      "list card payments",
+      signal,
+      (cursor) => this.increase().cardPayments.list({ card_id: filter.cardId, created_at: createdIn(window), limit: 100, cursor }),
+      toListedCardPayment,
+    );
   }
 
   // https://increase.com/documentation/api/card-payments#sandbox-create-a-card-authorization
@@ -303,9 +344,9 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
   }
 
   // https://increase.com/documentation/api/ach-transfers#retrieve-an-ach-transfer
-  async retrieveTransfer(id: string): Promise<ProviderTransfer> {
+  async retrieveTransfer(id: string): Promise<ListedTransfer> {
     const { data, requestId } = await this.call(`retrieve ACH transfer ${id}`, () => this.increase().achTransfers.retrieve(id));
-    return toProviderTransfer(data, requestId);
+    return toListedTransfer(data, requestId);
   }
 
   // https://increase.com/documentation/api/ach-transfers#list-ach-transfers (filtered to the one with our key)
@@ -315,6 +356,20 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
     );
     const [transfer] = data.data;
     return transfer ? toProviderTransfer(transfer, requestId) : null;
+  }
+
+  /**
+   * https://increase.com/documentation/api/ach-transfers#list-ach-transfers, filtered by
+   * `created_at.on_or_after` / `created_at.before`. A transfer has no update time, so `updatedAt` is
+   * the latest of its creation, submission, settlement and return.
+   */
+  async listTransfers(window: ListWindow, filter: { accountId: string }, signal?: AbortSignal): Promise<ListResult<ListedTransfer>> {
+    return this.listAll(
+      "list ACH transfers",
+      signal,
+      (cursor) => this.increase().achTransfers.list({ account_id: filter.accountId, created_at: createdIn(window), limit: 100, cursor }),
+      toListedTransfer,
+    );
   }
 
   // https://increase.com/documentation/api/ach-transfers#sandbox-submit-an-ach-transfer
@@ -364,6 +419,30 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
     return { payment: data, requestId };
   }
 
+  /**
+   * Every page of a list endpoint (up to 100 per page, next page via `cursor` = the previous
+   * `next_cursor` until it is null), each with the SDK timeout; stops between pages once `signal`
+   * aborts and past MAX_LIST_PAGES.
+   */
+  private async listAll<Item, T>(
+    action: string,
+    signal: AbortSignal | undefined,
+    page: (cursor: string | undefined) => { withResponse(): Promise<{ data: { data: Item[]; next_cursor: string | null }; response: Response }> },
+    map: (item: Item, requestId: string | null) => T,
+  ): Promise<ListResult<T>> {
+    const result: ListResult<T> = { items: [], requestIds: [] };
+    let cursor: string | undefined;
+    for (let n = 1; ; n++) {
+      if (n > MAX_LIST_PAGES) throw new PaymentProviderError(`Increase ${action} stopped: more than ${MAX_LIST_PAGES} pages`, null);
+      if (signal?.aborted) throw new PaymentProviderError(`Increase ${action} stopped: deadline passed`, null);
+      const { data, requestId } = await this.call(action, () => page(cursor));
+      result.requestIds.push(requestId);
+      for (const item of data.data) result.items.push(map(item, requestId));
+      if (!data.next_cursor) return result;
+      cursor = data.next_cursor;
+    }
+  }
+
   /** Runs one SDK call, returning its data and request id, or throwing a provider error without Increase's body text. */
   private async call<T>(action: string, run: () => { withResponse(): Promise<{ data: T; response: Response }> }) {
     try {
@@ -385,6 +464,15 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
     });
     return this.client;
   }
+}
+
+/** Increase's created_at filter for [start, end). */
+function createdIn(window: ListWindow) {
+  return { on_or_after: window.start.toISOString(), before: window.end.toISOString() };
+}
+
+function latest(...times: Array<string | null | undefined>): Date {
+  return new Date(Math.max(...times.filter((t): t is string => !!t).map((t) => Date.parse(t))));
 }
 
 function providerError(action: string, error: unknown): PaymentProviderError {
