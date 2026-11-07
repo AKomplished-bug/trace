@@ -60,7 +60,7 @@ function Queue({ title, count, href, linkText, clear, children }: { title: strin
         )}
       </div>
       <div className="border-t px-4 py-2.5">
-        <Link href={href} className={`inline-flex items-center gap-1 text-sm ${linkClass}`}>
+        <Link href={href} className={`inline-flex min-h-6 items-center gap-1 text-sm ${linkClass}`}>
           {linkText}
           <ArrowRight aria-hidden className="size-4" />
         </Link>
@@ -106,7 +106,7 @@ export default async function OpsHome() {
               {failedEvents.items.map((e) => (
                 <li key={e.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                   <span className="min-w-0">
-                    <Link href={`/ops/events/${e.id}`} className="font-mono text-xs font-medium break-all underline-offset-4 hover:underline">
+                    <Link href={`/ops/events/${e.id}`} className="inline-flex min-h-6 items-center font-mono text-xs font-medium break-all underline-offset-4 hover:underline">
                       {e.eventType}
                     </Link>
                     <span className="block text-xs text-muted-foreground">
@@ -162,7 +162,7 @@ export default async function OpsHome() {
             <ul className="divide-y">
               {openInvestigations.slice(0, INLINE).map((i) => (
                 <li key={i.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                  <Link href={`/ops/investigations/${i.id}`} className="font-medium underline-offset-4 hover:underline">
+                  <Link href={`/ops/investigations/${i.id}`} className="inline-flex min-h-6 items-center font-medium underline-offset-4 hover:underline">
                     {RECONCILIATION_STATUS_LABELS[i.recordStatus]}, {TYPE_LABELS[i.transactionType].toLowerCase()}
                   </Link>
                   <span className="text-xs text-muted-foreground">
@@ -186,7 +186,7 @@ export default async function OpsHome() {
           Metrics
         </h2>
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-          <Panel title="External events by status" aside={<Link href="/ops/events" className={`text-sm ${linkClass}`}>Event viewer</Link>}>
+          <Panel title="External events by status" aside={<Link href="/ops/events" className={`inline-flex min-h-6 items-center text-sm ${linkClass}`}>Event viewer</Link>}>
             <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               {externalEventStatus.enumValues.map((status) => (
                 <li key={status}>

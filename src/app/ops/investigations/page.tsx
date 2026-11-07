@@ -84,9 +84,9 @@ export default async function InvestigationsPage({ searchParams }: { searchParam
                   <TableCell className="px-4 py-3">
                     <Link
                       href={`/ops/investigations/${i.id}`}
-                      aria-label={`Investigation opened ${new Date(i.createdAt).toISOString().slice(0, 10)}`}
                       className="rounded-full outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset"
                     >
+                      <span className="sr-only">Investigation: </span>
                       <ReconciliationStatusBadge status={i.recordStatus} />
                     </Link>
                   </TableCell>

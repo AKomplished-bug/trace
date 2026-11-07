@@ -52,7 +52,7 @@ export function AppSidebar({ home, label, items }: { home: string; label: string
     <Sidebar>
       <nav aria-label={label} className="flex h-full min-h-0 flex-col">
         <SidebarHeader className="h-14 justify-center px-4">
-          <Link href={home} className="text-[15px] font-semibold tracking-tight" onClick={() => setOpenMobile(false)}>
+          <Link href={home} className="inline-flex h-9 items-center text-[15px] font-semibold tracking-tight" onClick={() => setOpenMobile(false)}>
             Trace
           </Link>
         </SidebarHeader>

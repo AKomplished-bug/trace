@@ -32,9 +32,9 @@ export function LatencyTable({ routes }: { routes: readonly RouteLatency[] }) {
             <TableRow className="hover:bg-transparent">
               <TableHead className="px-4 text-xs text-muted-foreground">Route</TableHead>
               <TableHead className="px-4 text-right text-xs text-muted-foreground">Requests</TableHead>
-              <TableHead className="px-4 text-right text-xs text-muted-foreground">p50</TableHead>
+              <TableHead className="hidden px-4 text-right text-xs text-muted-foreground sm:table-cell">p50</TableHead>
               <TableHead className="px-4 text-right text-xs text-muted-foreground">p95</TableHead>
-              <TableHead className="px-4 text-right text-xs text-muted-foreground">Slowest</TableHead>
+              <TableHead className="hidden px-4 text-right text-xs text-muted-foreground sm:table-cell">Slowest</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -42,9 +42,9 @@ export function LatencyTable({ routes }: { routes: readonly RouteLatency[] }) {
               <TableRow key={r.route}>
                 <TableCell className="px-4 font-mono text-xs break-all whitespace-normal">{r.route}</TableCell>
                 <TableCell className="px-4 text-right tabular-nums">{r.count}</TableCell>
-                <TableCell className="px-4 text-right tabular-nums">{ms(r.p50Ms)}</TableCell>
+                <TableCell className="hidden px-4 text-right tabular-nums sm:table-cell">{ms(r.p50Ms)}</TableCell>
                 <TableCell className="px-4 text-right tabular-nums">{ms(r.p95Ms)}</TableCell>
-                <TableCell className="px-4 text-right tabular-nums">{maxBucketText(r.maxBucket)}</TableCell>
+                <TableCell className="hidden px-4 text-right tabular-nums sm:table-cell">{maxBucketText(r.maxBucket)}</TableCell>
               </TableRow>
             ))}
           </TableBody>

@@ -138,7 +138,7 @@ export default async function ReconciliationPage({ searchParams }: { searchParam
                         </TableCell>
                         <TableCell className="space-y-1 px-4 py-3 text-right">
                           <InvestigationAction recordId={e.id} investigationId={e.investigationId} />
-                          <Link href={`/ops/reconciliation/${e.runId}#record-${e.id}`} className={`block text-xs ${linkClass}`}>
+                          <Link href={`/ops/reconciliation/${e.runId}#record-${e.id}`} className={`inline-flex min-h-6 items-center text-xs ${linkClass}`}>
                             View in run
                           </Link>
                         </TableCell>

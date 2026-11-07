@@ -158,7 +158,7 @@ export default async function TransactionPage({ params }: { params: Promise<{ id
   return (
     <div className="space-y-6">
       <OpenTargetDetails />
-      <Link href="/activity" className={`inline-flex items-center gap-1 text-sm ${linkClass}`}>
+      <Link href="/activity" className={`inline-flex min-h-6 items-center gap-1 text-sm ${linkClass}`}>
         <ChevronLeft aria-hidden className="size-4" />
         Activity
       </Link>
