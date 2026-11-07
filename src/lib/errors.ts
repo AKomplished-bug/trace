@@ -16,6 +16,19 @@ export class PermanentEventError extends Error {
   }
 }
 
+/**
+ * A verified event about a provider object that isn't ours (another account or card under the same
+ * provider login, a payment made in the provider's dashboard). Retrying can't make it ours and
+ * there is nothing for Ops to decide, so the worker marks the event IGNORED at once, with the
+ * reason in `last_error`, and counts it as `not_ours`. Subclass it with a specific name.
+ */
+export class NotOursEventError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotOursEventError";
+  }
+}
+
 interface DatabaseErrorLike extends Error {
   code: string;
   severity: string;

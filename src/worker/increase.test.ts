@@ -274,10 +274,13 @@ describe("Increase card lifecycle through webhook ingestion and the worker", () 
     expect(await account()).toEqual({ ledgerCents: 50000, availableCents: 50000 });
   });
 
-  it("retries while the card isn't linked to an Increase card", async () => {
+  it("ignores at once a card payment on a card that isn't ours", async () => {
     await db.update(cards).set({ providerId: null });
     const cardPaymentId = (await fake.adapter.simulateAuthorization({ cardId: PROVIDER_CARD_ID, amountCents: 8000 })).cardPaymentId;
-    expect((await notify(cardPaymentId)).outcomes).toEqual(["retry"]);
+    const { event, outcomes } = await notify(cardPaymentId);
+    expect(outcomes).toEqual(["not_ours"]);
+    const [stored] = await db.select().from(externalEvents).where(eq(externalEvents.externalEventId, event.id));
+    expect(stored).toMatchObject({ status: "IGNORED", attempts: 1, lastError: `not ours: CardNotOursError: No card with increase id ${PROVIDER_CARD_ID} for card payment ${cardPaymentId}` });
     expect(await db.$count(transactions)).toBe(0);
   });
 

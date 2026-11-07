@@ -16,6 +16,25 @@ export interface WebhookVerifier {
   verifyWebhook(rawBody: string, headers: Headers): VerifiedWebhook;
 }
 
+/** An event read from a provider's events API: what a verified webhook carries, and when the provider created it. */
+export interface PolledEvent extends VerifiedWebhook {
+  createdAt: Date;
+}
+
+/** One page of a provider's events, oldest first. */
+export interface EventPage {
+  events: PolledEvent[];
+  /** Pass back as `cursor` for the next page; null on the last one. */
+  nextCursor: string | null;
+  requestId: string | null;
+}
+
+/** A provider events API the worker polls, for events whose webhook never arrived. */
+export interface EventFeed {
+  /** One page of the events we handle created at or after `since` (all of them when null), oldest first. */
+  listEvents(input: { since: Date | null; cursor?: string }, signal?: AbortSignal): Promise<EventPage>;
+}
+
 /** The signature is missing, malformed, stale or wrong. Deliberately carries no detail. */
 export class WebhookVerificationError extends Error {
   constructor() {

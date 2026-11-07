@@ -5,7 +5,7 @@ import { accounts, externalEvents, holds, payments, transactionEvents, transacti
 import { ENTRY_TYPE_FOR_TRANSACTION } from "../domain/ledger";
 import { planPaymentActions, type PaymentStatus } from "../domain/payments";
 import type { ProviderTransfer } from "../integrations/transfer-provider";
-import { PermanentEventError } from "../lib/errors";
+import { NotOursEventError, PermanentEventError } from "../lib/errors";
 import type { Logger } from "../lib/logger";
 import { accountAvailableCents, lockAccount } from "./accounts";
 import { IdempotencyConflictError, requestHash } from "./funding";
@@ -35,10 +35,13 @@ export class AccountNotLinkedError extends Error {
   }
 }
 
-/** The transfer carries no idempotency key of ours and matches no payment: we didn't create it. Permanent. */
-export class PaymentNotOursError extends PermanentEventError {
-  constructor(provider: string, transferId: string) {
-    super(`${provider} transfer ${transferId} has no Trace payment idempotency key and matches no payment`);
+/**
+ * We didn't create the transfer: it leaves from a provider account that isn't ours, or carries no
+ * idempotency key of ours and matches no payment. Ignored.
+ */
+export class PaymentNotOursError extends NotOursEventError {
+  constructor(provider: string, transferId: string, reason = "has no Trace payment idempotency key and matches no payment") {
+    super(`${provider} transfer ${transferId} ${reason}`);
     this.name = "PaymentNotOursError";
   }
 }
@@ -419,9 +422,13 @@ async function recordReturn(tx: Tx, payment: Payment, input: AchTransferInput & 
 /**
  * The payment for `transfer`: by provider_object_id, else by the payment id in our idempotency
  * key (`payment-<id>`, which Increase stores on the transfer) when the submitter never stored the
- * id. Reads only; the caller locks account, then payment.
+ * id. A transfer from a provider account that isn't one of ours is not ours, whatever its key says
+ * (another database sharing the sandbox makes `payment-<uuid>` keys too). Reads only; the caller
+ * locks account, then payment.
  */
 async function findPayment(tx: Tx, provider: string, transfer: ProviderTransfer): Promise<{ id: string; accountId: string }> {
+  const [ourAccount] = await tx.select({ id: accounts.id }).from(accounts).where(eq(accounts.providerId, transfer.accountId));
+  if (!ourAccount) throw new PaymentNotOursError(provider, transfer.id, `is from ${provider} account ${transfer.accountId}, which isn't ours`);
   const columns = { id: payments.id, accountId: payments.accountId };
   const [byTransferId] = await tx.select(columns).from(payments).where(and(eq(payments.provider, provider), eq(payments.providerObjectId, transfer.id)));
   if (byTransferId) return byTransferId;
