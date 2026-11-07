@@ -7,6 +7,7 @@ balance is. Trace tells you why.**
 - Architecture and invariants: [CLAUDE.md](CLAUDE.md)
 - Decisions: [DECISIONS.md](DECISIONS.md)
 - Product spec: [docs/product-spec.md](docs/product-spec.md)
+- Sandbox integration evidence (Stripe test mode, Increase sandbox, deployed): [docs/sandbox-evidence.md](docs/sandbox-evidence.md)
 
 ## Setup
 
