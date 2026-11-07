@@ -4,9 +4,10 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 
-export function NavLink({ href, children }: { href: string; children: ReactNode }) {
+/** `exact`: active only on `href` itself, not its sub-pages (a section home such as /ops). */
+export function NavLink({ href, exact, children }: { href: string; exact?: boolean; children: ReactNode }) {
   const pathname = usePathname();
-  const active = href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+  const active = href === "/" || exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
   return (
     <Link
       href={href}

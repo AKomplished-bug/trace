@@ -21,6 +21,26 @@ export function StatusBadge({ status }: { status: TransactionStatus }) {
   );
 }
 
+type EventStatus = "RECEIVED" | "PROCESSING" | "PROCESSED" | "RETRY" | "FAILED" | "IGNORED";
+
+const EVENT_TONES: Record<EventStatus, string> = {
+  RECEIVED: "bg-neutral-100 text-neutral-700 ring-neutral-300",
+  PROCESSING: "bg-amber-50 text-amber-800 ring-amber-200",
+  RETRY: "bg-amber-50 text-amber-800 ring-amber-200",
+  PROCESSED: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+  FAILED: "bg-red-50 text-red-800 ring-red-200",
+  IGNORED: "bg-neutral-100 text-neutral-700 ring-neutral-300",
+};
+
+/** An external event's processing status (Ops). */
+export function EventStatusBadge({ status }: { status: EventStatus }) {
+  return (
+    <span className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-xs font-medium ring-1 ring-inset ${EVENT_TONES[status]}`}>
+      {status}
+    </span>
+  );
+}
+
 /** A small neutral tag (roles, hold states, entry kinds). */
 export function Tag({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "amber" | "emerald" }) {
   const tones = {
