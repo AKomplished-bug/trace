@@ -1190,3 +1190,106 @@ card payment) has no purchase to retrieve; its card payment is created with it, 
 it. Stripe's window is widened to whole seconds. More than 5,000 records per provider per window fails
 the run; shorter windows are the workaround. Not verified against the live APIs: the exact query
 encoding Stripe and Increase accept for these filters (only the SDKs and our fakes were exercised).
+
+## 2026-11-07 — Deployed on AWS (ECS Fargate + RDS), not Render or Vercel
+
+**Decision**
+One Docker image on ECS Fargate (ARM64) as two services, `trace-web` (`next start`, 0.25 vCPU /
+1 GB) and `trace-worker` (0.25 vCPU / 0.5 GB), one task each, with RDS Postgres 16 (`db.t4g.micro`,
+single-AZ, 20 GB gp3, encrypted, not public). Migrations run as a one-off task before the services
+roll. Plain AWS CLI scripts in `infra/aws/`, re-runnable. The trial database has **no backups and no
+deletion protection**: the account's Free plan refused a 7-day backup retention
+(`FreeTierRestrictionError` on `CreateDBInstance`), and the demo holds only seeded and sandbox data.
+
+**Why**
+The worker is a long-lived process that holds leases and polls Postgres; Vercel has no place for
+it, and serverless functions would make every request open its own connections. The trial expects
+AWS, and its account came with AWS credit. ARM Fargate is ~20% cheaper than x86 and the Mac
+builds arm64 natively. The worker runs TypeScript through `tsx` (now a runtime dependency), as it
+does locally, so one image serves web, worker and migrations without a second build.
+
+**Alternatives**
+Render or Railway (web + worker + Postgres in minutes, but off AWS); Vercel for web plus a separate
+worker host; App Runner (denied in the trial account); Terraform or CDK (more to read and review
+for about fifteen resources).
+
+**Tradeoff**
+The CLI scripts create what is missing but don't converge drift: a changed setting on an existing
+resource is not updated (e.g. the CloudFront config). The image carries production
+`node_modules` (~900 MB) rather than Next's standalone output, because the worker needs them.
+One web and one worker task is no high availability; both are stateless and safe to scale out.
+Production would need both backups (with point-in-time recovery) and deletion protection: here, a
+deleted or corrupted database is gone, and the ledger with it.
+
+## 2026-11-07 — CloudFront in front of an HTTP-only ALB
+
+**Decision**
+CloudFront (default `*.cloudfront.net` certificate) terminates HTTPS and forwards to the ALB over
+HTTP. Caching is disabled (managed `CachingDisabled`), every header including `Host`, cookies and
+query strings go to the origin (managed `AllViewer`), all methods are allowed. The ALB's security
+group admits only the CloudFront origin-facing managed prefix list.
+
+**Why**
+There is no domain, so no ACM certificate for the ALB, and the session cookie is `Secure` in
+production: HTTPS was needed without one. Forwarding `Host` keeps `checkSameOrigin` working: the
+browser's `Origin` and the `Host` the app sees are both the CloudFront domain. Webhook bodies and
+signature headers pass through unchanged, so Stripe/Increase verification works as locally.
+
+**Alternatives**
+A domain plus ACM on the ALB (no domain in the trial); HTTP only (Secure cookies wouldn't be set,
+credentials in clear).
+
+**Tradeoff**
+CloudFront → ALB is plain HTTP inside AWS's network. The prefix list admits any CloudFront
+distribution, not only ours; a secret origin header checked by an ALB listener rule would close
+that.
+
+## 2026-11-07 — One region (ap-southeast-2), public subnets, no NAT gateway
+
+**Decision**
+Everything runs in `ap-southeast-2`, in the default VPC. Fargate tasks run in its public subnets
+with public IPs, so they reach ECR, Secrets Manager, CloudWatch, Stripe and Increase without a NAT
+gateway. Inbound is closed by security groups: web tasks accept port 3000 from the ALB only, the
+worker and one-off tasks accept nothing, Postgres accepts 5432 from those two groups only and has
+no public address.
+
+**Why**
+The trial account's organization policy (SCP) denies every other region (and App Runner). A NAT
+gateway costs ~$40/month before traffic, more than the rest of the stack, for a sandbox on a
+$100 credit.
+
+**Alternatives**
+Private subnets with a NAT gateway; private subnets with VPC endpoints (ECR, Secrets Manager, logs:
+also ~$7–10/month each, and still no route to Stripe or Increase).
+
+**Tradeoff**
+Tasks have public IPs, so a security-group mistake would expose them directly; outbound traffic
+leaves from changing addresses (no fixed egress IP to allowlist). The region is far from London:
+pages carry ~250 ms of extra round trip that CloudFront doesn't hide with caching off.
+
+## 2026-11-07 — Secrets in Secrets Manager, injected as ECS secrets
+
+**Decision**
+One Secrets Manager secret per variable (`trace/DATABASE_URL`, `trace/SESSION_SECRET`,
+`trace/STRIPE_SECRET_KEY`, `trace/STRIPE_WEBHOOK_SECRET`, `trace/INCREASE_API_KEY`,
+`trace/INCREASE_WEBHOOK_SECRET`). Task definitions reference them by ARN (`secrets`/`valueFrom`),
+never as `environment` values; the existing `trace-ecs-execution` role may read `trace/*` only.
+The migrate/seed task gets `DATABASE_URL` alone. No task role: the app calls no AWS API. The
+database password is generated by bootstrap (not RDS-managed) and exists only inside
+`DATABASE_URL`, which uses `sslmode=verify-full` against the RDS CA bundle baked into the image.
+
+**Why**
+Nothing secret in the image, the repo, the task definition or the script output. One secret per
+variable lets one value change (the Stripe webhook secret once the endpoint exists) with a single
+`put-secret-value`. An RDS-managed master password rotates weekly, which would break a stored
+connection URL.
+
+**Alternatives**
+One JSON secret with every key (cheaper, $0.40 vs $2.40/month, but every update is a
+read-modify-write); SSM Parameter Store SecureStrings (free, fine too); an RDS-managed password with
+the app assembling the URL (code change).
+
+**Tradeoff**
+Tasks read secrets only at start, so a new value needs a forced redeployment. Placeholders stand in
+for the Stripe webhook secret and the Increase keys until those exist: the app needs them to boot,
+and until they're real, webhooks from that provider fail verification (400) and Increase calls fail.

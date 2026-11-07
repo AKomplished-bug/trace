@@ -169,6 +169,46 @@ PaymentIntents (with our `transaction_id` metadata). One run per provider is act
 repeat request returns it. A failed run (e.g. the provider
 timed out) shows its error and a **Retry run** button.
 
+## Deploy (AWS)
+
+Trace runs on AWS in `ap-southeast-2` (the only region the trial account allows), with the AWS CLI
+profile `corgi`. One image (`Dockerfile`, linux/arm64) serves both processes:
+
+```text
+browser ── HTTPS ──▶ CloudFront ── HTTP ──▶ ALB (CloudFront IPs only) ──▶ ECS Fargate trace-web (next start)
+                                                                         ECS Fargate trace-worker (worker)
+                                                    RDS Postgres 16 (private) ◀──┘
+```
+
+```sh
+ENV_FILE=.env infra/aws/bootstrap.sh   # once (re-runnable): ECR, log group, security groups, secrets, RDS, ALB, ECS cluster, CloudFront, budget
+infra/aws/deploy.sh                    # each release: build + push the commit's image, migrate, roll trace-web and trace-worker
+infra/aws/run-task.sh seed             # once: the base seed (Acme Inc., owner + ops users, $0 account, card)
+```
+
+- `deploy.sh` refuses a dirty tree (images are tagged by commit), runs `db:migrate` as a one-off
+  task and only then updates the services; a service whose new tasks fail health checks rolls back.
+- Secrets live in Secrets Manager as `trace/<NAME>` (one per variable in `.env.example`) and reach
+  the tasks as ECS `secrets`. Bootstrap copies `STRIPE_SECRET_KEY` from `ENV_FILE`, generates
+  `SESSION_SECRET` and the database password, and stores placeholders for
+  `STRIPE_WEBHOOK_SECRET`, `INCREASE_API_KEY` and `INCREASE_WEBHOOK_SECRET`. Bootstrap never
+  overwrites a secret. To set a real one, then restart the tasks so they read it:
+
+  ```sh
+  aws --profile corgi --region ap-southeast-2 secretsmanager put-secret-value \
+    --secret-id trace/STRIPE_WEBHOOK_SECRET --secret-string file://whsec.txt   # a file, so the value isn't in shell history
+  aws --profile corgi --region ap-southeast-2 ecs update-service --cluster trace --service trace-web --force-new-deployment
+  aws --profile corgi --region ap-southeast-2 ecs update-service --cluster trace --service trace-worker --force-new-deployment
+  ```
+
+- Stripe webhooks: create an endpoint in the Stripe dashboard (test mode) at
+  `https://<cloudfront domain>/api/webhooks/stripe` for `payment_intent.succeeded` and
+  `payment_intent.payment_failed`, and store its signing secret as `trace/STRIPE_WEBHOOK_SECRET`.
+  Increase: `https://<cloudfront domain>/api/webhooks/increase`, as in the local setup.
+- Logs: CloudWatch group `/ecs/trace` (7 days), streams `trace-web/…`, `trace-worker/…`,
+  `trace-migrate/…` (`aws logs tail /ecs/trace --follow`).
+- `db:seed:demo` and `demo:reconcile` are dev only and are never run here.
+
 ## Check
 
 ```sh
