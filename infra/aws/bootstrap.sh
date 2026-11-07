@@ -11,9 +11,10 @@ TAGS="Key=$TAG_KEY,Value=$TAG_VALUE"
 CLOUDFRONT_PREFIX_LIST=$(awsc ec2 describe-managed-prefix-lists \
   --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing \
   --query 'PrefixLists[0].PrefixListId' --output text)
-# Managed CloudFront policies: CachingDisabled, and AllViewer (every header including Host, cookies, query).
+# Managed CloudFront policies: CachingDisabled, and AllViewerAndCloudFrontHeaders-2022-06 (every viewer
+# header including Host, cookies, query, plus CloudFront-Viewer-Address, the client IP login throttles on).
 CACHE_POLICY_CACHING_DISABLED=4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-ORIGIN_REQUEST_POLICY_ALL_VIEWER=216adef6-5c7f-47e4-b989-5492eafa07d3
+ORIGIN_REQUEST_POLICY=33f36d7e-f396-46d9-90e0-52428a34d9dc
 
 echo "== ECR repository"
 if ! awsc ecr describe-repositories --repository-names "$ECR_REPO" >/dev/null 2>&1; then
@@ -74,6 +75,30 @@ printf 'placeholder-increase-sandbox-not-configured' >"$WORK/increase-key"
 ensure_secret INCREASE_API_KEY "$WORK/increase-key"
 printf 'placeholder-increase-webhook-not-configured' >"$WORK/increase-whsec"
 ensure_secret INCREASE_WEBHOOK_SECRET "$WORK/increase-whsec"
+# The seeded users' sign-in passwords (db:seed reads them): 20 characters from a-z and 2-9 without
+# look-alikes (~99 bits), in groups of 5. Generated once. CREDENTIALS (default: .demo-credentials
+# next to the repo, outside it so no build context or image can pick it up) is rewritten from the
+# stored secrets on every run, mode 600, for handing the logins to reviewers.
+readable_password() {
+  local chars=""
+  while [ ${#chars} -lt 20 ]; do chars+=$(openssl rand -base64 48 | tr -dc 'abcdefghjkmnpqrstuvwxyz23456789'); done
+  printf '%s-%s-%s-%s' "${chars:0:5}" "${chars:5:5}" "${chars:10:5}" "${chars:15:5}"
+}
+CREDENTIALS=${CREDENTIALS:-$(git rev-parse --show-toplevel)/../.demo-credentials}
+(umask 077 && : >"$WORK/credentials")
+for name in TRACE_OWNER_PASSWORD TRACE_OPS_PASSWORD; do
+  readable_password >"$WORK/$name"
+  ensure_secret "$name" "$WORK/$name"
+  { printf '%s=' "$name"; awsc secretsmanager get-secret-value --secret-id "$SECRET_PREFIX$name" \
+    --query SecretString --output text; } >>"$WORK/credentials"
+done
+mv -f "$WORK/credentials" "$CREDENTIALS"
+# CloudFront sends this as X-Origin-Verify and the ALB forwards only requests carrying it, so only our
+# distribution reaches the app (which never reads it).
+printf '%s' "$(openssl rand -hex 32)" >"$WORK/origin-secret"
+ensure_secret CLOUDFRONT_ORIGIN_SECRET "$WORK/origin-secret"
+awsc secretsmanager get-secret-value --secret-id "${SECRET_PREFIX}CLOUDFRONT_ORIGIN_SECRET" \
+  --query SecretString --output text >"$WORK/origin-secret"
 
 echo "== Execution role"
 if ! awsc iam get-role --role-name "$EXECUTION_ROLE" >/dev/null 2>&1; then
@@ -138,9 +163,22 @@ TG_ARN=$(awsc elbv2 describe-target-groups --names "$TARGET_GROUP" --query 'Targ
     --matcher HttpCode=200 --tags "$TAGS" --query 'TargetGroups[0].TargetGroupArn' --output text)
 awsc elbv2 modify-target-group-attributes --target-group-arn "$TG_ARN" \
   --attributes Key=deregistration_delay.timeout_seconds,Value=30 >/dev/null
-if [ "$(awsc elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" --query 'length(Listeners)')" = 0 ]; then
-  awsc elbv2 create-listener --load-balancer-arn "$ALB_ARN" --protocol HTTP --port 80 \
-    --default-actions "Type=forward,TargetGroupArn=$TG_ARN" --tags "$TAGS" >/dev/null
+LISTENER_ARN=$(awsc elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" --query 'Listeners[0].ListenerArn' --output text)
+if [ "$LISTENER_ARN" = None ]; then
+  LISTENER_ARN=$(awsc elbv2 create-listener --load-balancer-arn "$ALB_ARN" --protocol HTTP --port 80 \
+    --default-actions "Type=forward,TargetGroupArn=$TG_ARN" --tags "$TAGS" --query 'Listeners[0].ListenerArn' --output text)
+fi
+# Rule 1 forwards requests with our X-Origin-Verify header; the default action turns into a 403 once
+# CloudFront sends it (end of the CloudFront step), so switching an existing setup never drops traffic.
+jq -n --rawfile secret "$WORK/origin-secret" '[{Field: "http-header",
+  HttpHeaderConfig: {HttpHeaderName: "X-Origin-Verify", Values: [$secret | rtrimstr("\n")]}}]' >"$WORK/origin-condition.json"
+RULE_ARN=$(awsc elbv2 describe-rules --listener-arn "$LISTENER_ARN" --query "Rules[?Priority=='1'].RuleArn | [0]" --output text)
+if [ "$RULE_ARN" = None ]; then
+  awsc elbv2 create-rule --listener-arn "$LISTENER_ARN" --priority 1 --conditions "file://$WORK/origin-condition.json" \
+    --actions "Type=forward,TargetGroupArn=$TG_ARN" --tags "$TAGS" >/dev/null
+else
+  awsc elbv2 modify-rule --rule-arn "$RULE_ARN" --conditions "file://$WORK/origin-condition.json" \
+    --actions "Type=forward,TargetGroupArn=$TG_ARN" >/dev/null
 fi
 ALB_DNS=$(awsc elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --query 'LoadBalancers[0].DNSName' --output text)
 
@@ -156,7 +194,7 @@ DIST_ID=$(awsc cloudfront list-distributions --query "DistributionList.Items[?Co
 if [ "$DIST_ID" = None ]; then
   # Host is forwarded so the app sees the CloudFront host, which the browser's Origin header names
   # (checkSameOrigin compares the two). The body and Stripe-Signature pass through unchanged.
-  jq -n --arg alb "$ALB_DNS" --arg cp "$CACHE_POLICY_CACHING_DISABLED" --arg orp "$ORIGIN_REQUEST_POLICY_ALL_VIEWER" \
+  jq -n --arg alb "$ALB_DNS" --arg cp "$CACHE_POLICY_CACHING_DISABLED" --arg orp "$ORIGIN_REQUEST_POLICY" \
     --arg tk "$TAG_KEY" --arg tv "$TAG_VALUE" '{
     DistributionConfig: {
       CallerReference: "trace-web", Comment: "trace", Enabled: true, PriceClass: "PriceClass_100", HttpVersion: "http2",
@@ -172,6 +210,23 @@ if [ "$DIST_ID" = None ]; then
   DIST_ID=$(awsc cloudfront create-distribution-with-tags --distribution-config-with-tags "file://$WORK/cf.json" \
     --query 'Distribution.Id' --output text)
 fi
+# New or existing, the distribution gets the current origin request policy and sends X-Origin-Verify
+# to the ALB; updated in place only when either differs.
+awsc cloudfront get-distribution-config --id "$DIST_ID" >"$WORK/cf-current.json"
+jq --arg orp "$ORIGIN_REQUEST_POLICY" --rawfile secret "$WORK/origin-secret" '.DistributionConfig
+  | .DefaultCacheBehavior.OriginRequestPolicyId = $orp
+  | .Origins.Items[0].CustomHeaders = {Quantity: 1,
+      Items: [{HeaderName: "X-Origin-Verify", HeaderValue: ($secret | rtrimstr("\n"))}]}' \
+  "$WORK/cf-current.json" >"$WORK/cf-update.json"
+if ! jq -e --slurpfile want "$WORK/cf-update.json" '.DistributionConfig == $want[0]' "$WORK/cf-current.json" >/dev/null; then
+  awsc cloudfront update-distribution --id "$DIST_ID" --if-match "$(jq -r .ETag "$WORK/cf-current.json")" \
+    --distribution-config "file://$WORK/cf-update.json" >/dev/null
+fi
+echo "waiting for the distribution to deploy (a change takes a few minutes)"
+awsc cloudfront wait distribution-deployed --id "$DIST_ID"
+# Every edge now sends the header, so the ALB can refuse whatever doesn't carry it.
+awsc elbv2 modify-listener --listener-arn "$LISTENER_ARN" --default-actions \
+  '[{"Type":"fixed-response","FixedResponseConfig":{"StatusCode":"403","ContentType":"text/plain","MessageBody":"Forbidden"}}]' >/dev/null
 CF_DOMAIN=$(awsc cloudfront get-distribution --id "$DIST_ID" --query 'Distribution.DomainName' --output text)
 
 echo "== Budget"
