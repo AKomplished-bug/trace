@@ -36,22 +36,22 @@ function BalanceBar({ label, before, after, max, tone }: { label: string; before
   const high = Math.max(before, after, 0);
   return (
     <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-1 sm:grid-cols-[5.5rem_minmax(0,1fr)_minmax(13rem,max-content)]">
-      <span className="text-xs font-medium text-neutral-600">{label}</span>
-      <div className="relative h-4 overflow-hidden rounded-sm bg-neutral-100" aria-hidden>
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <div className="relative h-4 overflow-hidden rounded-sm bg-muted" aria-hidden>
         <div className={`absolute inset-y-0 left-0 ${tone} transition-[width] duration-300`} style={{ width: percent(after, max) }} />
         {delta !== 0 && (
           <div
             className={`absolute inset-y-0 transition-all duration-300 ${
-              delta < 0 ? "bg-[repeating-linear-gradient(45deg,#fca5a5_0,#fca5a5_3px,#fee2e2_3px,#fee2e2_6px)]" : "bg-emerald-300"
+              delta < 0 ? "bg-[repeating-linear-gradient(45deg,var(--danger-line)_0,var(--danger-line)_3px,var(--danger-soft)_3px,var(--danger-soft)_6px)]" : "bg-success/50"
             }`}
             style={{ left: percent(low, max), width: `calc(${percent(high, max)} - ${percent(low, max)})` }}
           />
         )}
       </div>
       <p className="col-start-2 whitespace-nowrap text-sm sm:col-start-3 sm:text-right">
-        <Money cents={before} className="text-neutral-500" /> <span aria-hidden>→</span>
+        <Money cents={before} className="text-muted-foreground" /> <span aria-hidden>→</span>
         <span className="sr-only">to</span> <Money cents={after} className="font-medium" />
-        <span className={`ml-2 font-mono text-xs ${delta < 0 ? "text-red-700" : delta > 0 ? "text-emerald-700" : "text-neutral-400"}`}>
+        <span className={`ml-2 font-mono text-xs ${delta < 0 ? "text-danger" : delta > 0 ? "text-success" : "text-muted-foreground"}`}>
           {delta === 0 ? "no change" : formatCents(delta, { signed: true })}
         </span>
       </p>
@@ -68,9 +68,9 @@ function SteppedChart({ points, position, max, min }: { points: Balances[]; posi
   const path = (key: keyof Balances) => points.map((point, i) => (i === 0 ? `M0 ${y(point[key])}` : `H${i} V${y(point[key])}`)).join(" ");
   return (
     <svg viewBox={`0 0 ${width} 60`} preserveAspectRatio="none" className="h-16 w-full" aria-hidden>
-      <line x1={position} x2={position} y1={0} y2={60} className="stroke-neutral-300" strokeWidth={1} vectorEffect="non-scaling-stroke" />
-      <path d={path("ledgerCents")} fill="none" className="stroke-neutral-800" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-      <path d={path("availableCents")} fill="none" className="stroke-emerald-600" strokeWidth={2} strokeDasharray="5 3" vectorEffect="non-scaling-stroke" />
+      <line x1={position} x2={position} y1={0} y2={60} className="stroke-border" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+      <path d={path("ledgerCents")} fill="none" className="stroke-foreground" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+      <path d={path("availableCents")} fill="none" className="stroke-success" strokeWidth={2} strokeDasharray="5 3" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
@@ -103,7 +103,8 @@ export function ReplayPlayer({ initial, steps, why }: PlayerProps) {
   const announcement = step
     ? `Step ${position} of ${last}: ${step.title}. Ledger ${formatCents(step.before.ledgerCents)} to ${formatCents(step.after.ledgerCents)}, available ${formatCents(step.before.availableCents)} to ${formatCents(step.after.availableCents)}.`
     : `Start: ledger ${formatCents(initial.ledgerCents)}, available ${formatCents(initial.availableCents)}.`;
-  const button = "rounded border border-neutral-200 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40";
+  const button =
+    "inline-flex h-8 items-center gap-1 rounded-md border bg-card px-2.5 text-xs font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 
   return (
     <div
@@ -111,7 +112,7 @@ export function ReplayPlayer({ initial, steps, why }: PlayerProps) {
       aria-label="Replay player. Use the left and right arrow keys to step through."
       tabIndex={0}
       onKeyDown={onKeyDown}
-      className="space-y-4 rounded outline-none focus-visible:ring-2 focus-visible:ring-neutral-400"
+      className="-m-1.5 space-y-4 rounded-lg p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <p className="sr-only" aria-live="polite">
         {announcement}
@@ -130,7 +131,7 @@ export function ReplayPlayer({ initial, steps, why }: PlayerProps) {
         <button type="button" className={button} onClick={() => go(last)} disabled={position === last}>
           End <span aria-hidden>⏭</span>
         </button>
-        <span className="ml-auto font-mono text-xs text-neutral-500">{position === 0 ? "start" : `step ${position} / ${last}`}</span>
+        <span className="ml-auto font-mono text-xs text-muted-foreground">{position === 0 ? "start" : `step ${position} / ${last}`}</span>
       </div>
 
       <ol className="flex flex-wrap gap-1" aria-label="Steps">
@@ -139,7 +140,7 @@ export function ReplayPlayer({ initial, steps, why }: PlayerProps) {
             type="button"
             onClick={() => go(0)}
             aria-current={position === 0 ? "step" : undefined}
-            className={`h-6 rounded px-2 font-mono text-[11px] ${position === 0 ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"}`}
+            className={`h-7 rounded-md px-2 font-mono text-xs ${position === 0 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"}`}
           >
             start
           </button>
@@ -151,14 +152,14 @@ export function ReplayPlayer({ initial, steps, why }: PlayerProps) {
               onClick={() => go(i + 1)}
               aria-current={position === i + 1 ? "step" : undefined}
               aria-label={`Step ${i + 1}: ${s.title}${s.matches ? "" : " (doesn't match the recorded balances)"}`}
-              className={`h-6 min-w-6 rounded px-1.5 font-mono text-[11px] ${
+              className={`h-7 min-w-7 rounded-md px-1.5 font-mono text-xs ${
                 position === i + 1
                   ? s.matches
-                    ? "bg-neutral-900 text-white"
-                    : "bg-red-700 text-white"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-danger text-card"
                   : s.matches
-                    ? "bg-neutral-100 text-neutral-600 hover:bg-neutral-200"
-                    : "bg-red-50 text-red-800 ring-1 ring-inset ring-red-200"
+                    ? "bg-muted text-muted-foreground hover:bg-accent"
+                    : "bg-danger-soft text-danger ring-1 ring-inset ring-danger-line/70"
               }`}
             >
               {i + 1}
@@ -167,45 +168,45 @@ export function ReplayPlayer({ initial, steps, why }: PlayerProps) {
         ))}
       </ol>
 
-      <div className="rounded border border-neutral-100 bg-neutral-50 p-3">
+      <div className="rounded border border-border bg-muted/50 p-3">
         {step ? (
           <>
-            <p className="font-mono text-xs text-neutral-500">step {step.seq}</p>
+            <p className="font-mono text-xs text-muted-foreground">step {step.seq}</p>
             <p className="mt-0.5 text-sm font-medium">{step.title}</p>
-            {step.detail && <p className="mt-0.5 text-xs text-neutral-600">{step.detail}</p>}
-            <p className="mt-1.5 text-xs text-neutral-800">{step.effect}</p>
+            {step.detail && <p className="mt-0.5 text-xs text-muted-foreground">{step.detail}</p>}
+            <p className="mt-1.5 text-xs text-foreground">{step.effect}</p>
             {step.otherActivity && (
-              <p className="mt-1.5 text-xs text-neutral-500">
+              <p className="mt-1.5 text-xs text-muted-foreground">
                 Before this step, other activity on your account moved the ledger by{" "}
                 <Money cents={step.otherActivity.ledgerCents} signed /> and available by <Money cents={step.otherActivity.availableCents} signed />.
               </p>
             )}
-            {!step.matches && <p className="mt-1.5 text-xs font-medium text-red-700">The recorded balances after this step differ from the replay.</p>}
+            {!step.matches && <p className="mt-1.5 text-xs font-medium text-danger">The recorded balances after this step differ from the replay.</p>}
           </>
         ) : (
           <>
             <p className="text-sm font-medium">Start</p>
-            <p className="mt-0.5 text-xs text-neutral-600">Your account just before this transaction&apos;s first step.</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">Your account just before this transaction&apos;s first step.</p>
           </>
         )}
       </div>
 
       <div className="space-y-2">
-        <BalanceBar label="Ledger" before={before.ledgerCents} after={current.ledgerCents} max={max} tone="bg-neutral-800" />
-        <BalanceBar label="Available" before={before.availableCents} after={current.availableCents} max={max} tone="bg-emerald-600" />
-        {current.availableCents < 0 && <p className="text-xs text-red-700">Available is below zero.</p>}
+        <BalanceBar label="Ledger" before={before.ledgerCents} after={current.ledgerCents} max={max} tone="bg-foreground" />
+        <BalanceBar label="Available" before={before.availableCents} after={current.availableCents} max={max} tone="bg-success" />
+        {current.availableCents < 0 && <p className="text-xs text-danger">Available is below zero.</p>}
       </div>
 
       {steps.length > 0 && (
         <figure>
           <SteppedChart points={points} position={position} max={max} min={min} />
-          <figcaption className="mt-1 flex gap-4 text-[11px] text-neutral-500">
+          <figcaption className="mt-1 flex gap-4 text-[11px] text-muted-foreground">
             <span>
-              <span aria-hidden className="mr-1 inline-block h-0.5 w-4 bg-neutral-800 align-middle" />
+              <span aria-hidden className="mr-1 inline-block h-0.5 w-4 bg-foreground align-middle" />
               Ledger
             </span>
             <span>
-              <span aria-hidden className="mr-1 inline-block w-4 border-t-2 border-dashed border-emerald-600 align-middle" />
+              <span aria-hidden className="mr-1 inline-block w-4 border-t-2 border-dashed border-success align-middle" />
               Available
             </span>
           </figcaption>
@@ -213,9 +214,9 @@ export function ReplayPlayer({ initial, steps, why }: PlayerProps) {
       )}
 
       {why.length > 0 && (
-        <div className="border-t border-neutral-100 pt-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Why the final balance is what it is</p>
-          <ul className="mt-1 space-y-0.5 font-mono text-xs text-neutral-800">
+        <div className="border-t border-border pt-3">
+          <p className="text-sm font-medium text-foreground">Why the final balance is what it is</p>
+          <ul className="mt-1 space-y-0.5 font-mono text-xs text-foreground">
             {why.map((line) => (
               <li key={line}>{line}</li>
             ))}

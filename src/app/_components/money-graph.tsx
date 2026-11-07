@@ -9,20 +9,20 @@ function NodeBody({ node }: { node: GraphNode }) {
   switch (node.type) {
     case "external":
       return node.providerRef || node.externalEventIds[0] ? (
-        <code className="block truncate font-mono text-[11px] text-neutral-600">{node.providerRef ?? node.externalEventIds[0]}</code>
+        <code className="block truncate font-mono text-[11px] text-muted-foreground">{node.providerRef ?? node.externalEventIds[0]}</code>
       ) : null;
     case "hold":
       return (
         <p className="text-sm">
-          <Money cents={node.amountCents} /> <Tag tone={node.status === "ACTIVE" ? "amber" : "neutral"}>{node.status.toLowerCase()}</Tag>
+          <Money cents={node.amountCents} /> <Tag tone={node.status === "ACTIVE" ? "amber" : "neutral"}>{node.status === "ACTIVE" ? "Active" : node.status === "RELEASED" ? "Released" : "Expired"}</Tag>
         </p>
       );
     case "ledger_entry":
       return <Money cents={node.amountCents} signed className="text-sm" />;
     case "balance":
       return (
-        <p className="text-xs text-neutral-600">
-          Ledger <Money cents={node.ledgerCents} className="text-neutral-900" /> · Available <Money cents={node.availableCents} className="text-neutral-900" />
+        <p className="text-xs text-muted-foreground">
+          Ledger <Money cents={node.ledgerCents} className="text-foreground" /> · Available <Money cents={node.availableCents} className="text-foreground" />
         </p>
       );
     case "transaction":
@@ -43,7 +43,7 @@ export function MoneyGraph({ graph, type }: { graph: Graph; type: TransactionTyp
     return node ? graphNodeTitle(node, type).title : id;
   };
 
-  if (graph.nodes.length === 0) return <p className="text-sm text-neutral-600">Nothing has happened to this transaction yet.</p>;
+  if (graph.nodes.length === 0) return <p className="text-sm text-muted-foreground">Nothing has happened to this transaction yet.</p>;
 
   return (
     <ol className="flex flex-col items-stretch" aria-label="Money graph, in causal order">
@@ -58,18 +58,18 @@ export function MoneyGraph({ graph, type }: { graph: Graph; type: TransactionTyp
         const card = (
           <span
             className={`block rounded border px-3 py-2 ${
-              external ? "border-dashed border-sky-300 bg-sky-50/50" : node.type === "balance" ? "border-neutral-800 bg-white" : "border-neutral-200 bg-white"
-            } ${href ? "hover:border-neutral-500" : ""}`}
+              external ? "border-dashed border-primary/50 bg-accent/40" : node.type === "balance" ? "border-foreground/70 bg-card" : "border-border bg-card"
+            } ${href ? "hover:border-ring" : ""}`}
           >
             <span className="flex flex-wrap items-baseline justify-between gap-x-3">
               <span className="text-sm font-medium">{title}</span>
-              <span className="text-[11px] text-neutral-500">{subtitle}</span>
+              <span className="text-[11px] text-muted-foreground">{subtitle}</span>
             </span>
             <span className="mt-1 block">
               <NodeBody node={node} />
             </span>
             {fromEarlier.length > 0 && (
-              <span className="mt-1 block text-[11px] text-neutral-500">
+              <span className="mt-1 block text-[11px] text-muted-foreground">
                 {fromEarlier.map((edge) => `${titleOf(edge.from)} ${EDGE_COPY[edge.kind]} this`).join(" · ")}
               </span>
             )}
@@ -78,8 +78,8 @@ export function MoneyGraph({ graph, type }: { graph: Graph; type: TransactionTyp
         return (
           <li key={node.id} className="flex flex-col">
             {i > 0 && (
-              <span className="flex items-center gap-2 py-1 pl-4 text-[11px] text-neutral-500" aria-hidden={!fromPrevious}>
-                <span aria-hidden className="text-neutral-400">
+              <span className="flex items-center gap-2 py-1 pl-4 text-[11px] text-muted-foreground" aria-hidden={!fromPrevious}>
+                <span aria-hidden className="text-muted-foreground">
                   ↓
                 </span>
                 {fromPrevious ? EDGE_COPY[fromPrevious.kind] : ""}
@@ -97,7 +97,7 @@ export function MoneyGraph({ graph, type }: { graph: Graph; type: TransactionTyp
             {node.type === "external" && node.eventIds.length > 0 && (
               <span className="mt-0.5 flex flex-wrap gap-x-2 pl-3 text-[11px]">
                 {node.eventIds.map((id, k) => (
-                  <a key={id} href={`#event-${id}`} className="font-mono text-sky-800 hover:underline">
+                  <a key={id} href={`#event-${id}`} className="font-mono text-primary hover:underline">
                     {node.externalEventIds[k]}
                   </a>
                 ))}
