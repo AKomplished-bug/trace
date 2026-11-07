@@ -43,6 +43,13 @@
       "when": 1794027078589,
       "tag": "0005_reconciliation",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794038675052,
+      "tag": "0006_auth_passwords",
+      "breakpoints": true
     }
   ]
 }
