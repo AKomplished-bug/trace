@@ -14,12 +14,18 @@ Needs Node 22.12+ (developed on 26), npm and Docker.
 
 ```sh
 npm ci
-cp .env.example .env    # then set the Stripe test keys and Increase sandbox keys (see below)
+cp .env.example .env    # then set the Stripe test keys and Increase sandbox keys (see below), and the seeded users' passwords
 npm run db:up           # Postgres 16 on localhost:5433 with databases trace and trace_test
 npm run db:migrate      # apply src/db/migrations to DATABASE_URL
 npm run db:seed         # Acme Inc., an owner and an ops user, a $0 USD account, one virtual card
 npm run db:seed:demo    # optional, dev only: the $500 fund → $80 authorization → $65 settlement story
 ```
+
+`db:seed` sets the owner's and the Ops user's passwords from `TRACE_OWNER_PASSWORD` and
+`TRACE_OPS_PASSWORD` (at least 12 characters each). Without them it leaves those passwords as they
+are (none on a fresh database, so the user can't sign in) and says so; re-running it with new values
+rotates them. In production it refuses to run without both. `db:seed:demo` and `demo:reconcile` set
+the dev-only test passwords `owner-test-password` and `ops-test-password` (and refuse production).
 
 ## Run
 
@@ -27,6 +33,10 @@ npm run db:seed:demo    # optional, dev only: the $500 fund → $80 authorizatio
 npm run dev             # web app and API on http://localhost:3000 (next picks another port if taken)
 npm run worker          # event worker; run several to process in parallel, Ctrl-C / SIGTERM to stop
 ```
+
+Sign in at `/login` as `owner@acme.test` (the business owner) or `ops@trace.test` (Ops) with the
+password you seeded. Every failure is the same "Email or password is incorrect"; after 10 failed
+attempts in 15 minutes an email is locked for 15 minutes, and so is a client IP after 50 (`429`).
 
 ### Funding with Stripe test mode
 
@@ -45,7 +55,7 @@ a cookie jar) and fund the demo account with $500:
 
 ```sh
 curl -s -c /tmp/trace.jar localhost:3000/api/auth/login -H 'content-type: application/json' \
-  -d '{"userId":"00000000-0000-4000-8000-000000000011"}'
+  -d '{"email":"owner@acme.test","password":"<TRACE_OWNER_PASSWORD>"}'
 curl -s -b /tmp/trace.jar localhost:3000/api/funding -H 'content-type: application/json' \
   -H "Idempotency-Key: $(uuidgen)" -d '{"amountCents":50000}'
 ```
@@ -86,7 +96,7 @@ adapter only ever calls `sandbox.increase.com`). The web app and worker refuse t
 
    ```sh
    curl -s -c /tmp/trace.jar localhost:3000/api/auth/login -H 'content-type: application/json' \
-     -d '{"userId":"00000000-0000-4000-8000-000000000011"}'
+     -d '{"email":"owner@acme.test","password":"<TRACE_OWNER_PASSWORD>"}'
    CARD=00000000-0000-4000-8000-000000000031
    curl -s -b /tmp/trace.jar localhost:3000/api/cards/$CARD/authorize -H 'content-type: application/json' \
      -d '{"amountCents":8000,"merchant":"FIGMA.COM"}'
@@ -111,7 +121,7 @@ well as processing events.
 
 ```sh
 curl -s -c /tmp/trace.jar localhost:3000/api/auth/login -H 'content-type: application/json' \
-  -d '{"userId":"00000000-0000-4000-8000-000000000011"}'
+  -d '{"email":"owner@acme.test","password":"<TRACE_OWNER_PASSWORD>"}'
 curl -s -b /tmp/trace.jar localhost:3000/api/payments -H 'content-type: application/json' \
   -H "Idempotency-Key: $(uuidgen)" \
   -d '{"recipientName":"Globex Supplies","accountNumber":"987654321","routingNumber":"101050001","amountCents":10000,"description":"Invoice 2468"}'
@@ -147,7 +157,7 @@ npm run demo:reconcile   # dev only: seed + demo story, then one reconciliation 
 ```
 
 It logs the run id; the run has `MATCHED` (funding) and `AMOUNT_MISMATCH` (card purchase, $65 vs
-$80). Then, signed in as the Ops user (`00000000-0000-4000-8000-000000000012`, from `/login`):
+$80). Then, signed in at `/login` as the Ops user (`ops@trace.test`, password `ops-test-password`):
 
 1. **Reconciliation** (`/ops/reconciliation`) lists the exception: Acme Inc., internal $65,
    external $80, difference +$15. **Open investigation** opens its case.
@@ -183,7 +193,7 @@ browser ── HTTPS ──▶ CloudFront ── HTTP ──▶ ALB (CloudFront 
 ```sh
 ENV_FILE=.env infra/aws/bootstrap.sh   # once (re-runnable): ECR, log group, security groups, secrets, execution role, RDS, ALB, ECS cluster, CloudFront, budget
 infra/aws/deploy.sh                    # each release: build + push the commit's image, migrate, roll trace-web and trace-worker
-infra/aws/run-task.sh seed             # once: the base seed (Acme Inc., owner + ops users, $0 account, card)
+infra/aws/run-task.sh seed             # once, and after rotating a password: the base seed (Acme Inc., owner + ops users with passwords, $0 account, card)
 ```
 
 - `deploy.sh` refuses a dirty tree (images are tagged by commit), runs `db:migrate` as a one-off
@@ -201,6 +211,19 @@ infra/aws/run-task.sh seed             # once: the base seed (Acme Inc., owner +
   aws --profile corgi --region ap-southeast-2 ecs update-service --cluster trace --service trace-worker --force-new-deployment
   ```
 
+- Sign-in passwords: bootstrap generates `trace/TRACE_OWNER_PASSWORD` and `trace/TRACE_OPS_PASSWORD`
+  (20 random characters) and on every run writes them from Secrets Manager to `CREDENTIALS`
+  (default `../.demo-credentials`, next to the repo and outside the Docker build context; mode 600),
+  which is how the logins are handed out. Only the `trace-migrate` task (migrate and
+  seed) receives them; `run-task.sh seed` hashes them into the users. To rotate one, put a new value
+  as above and run `infra/aws/run-task.sh seed` (no restart needed).
+- CloudFront forwards `CloudFront-Viewer-Address` (origin request policy
+  AllViewerAndCloudFrontHeaders-2022-06), the client IP the login throttle counts; bootstrap moves an
+  existing distribution onto that policy.
+- Only our distribution reaches the app: it sends `X-Origin-Verify` with `trace/CLOUDFRONT_ORIGIN_SECRET`
+  (generated by bootstrap), the ALB forwards requests whose header matches and answers 403 to the rest.
+  Bootstrap updates an existing distribution and listener in place and waits for the distribution
+  to deploy before turning on the 403, so re-running it never drops traffic.
 - Stripe webhooks: create an endpoint in the Stripe dashboard (test mode) at
   `https://<cloudfront domain>/api/webhooks/stripe` for `payment_intent.succeeded` and
   `payment_intent.payment_failed`, and store its signing secret as `trace/STRIPE_WEBHOOK_SECRET`.
