@@ -231,6 +231,16 @@ infra/aws/run-task.sh seed             # once, and after rotating a password: th
 - Logs: CloudWatch group `/ecs/trace` (7 days), streams `trace-web/…`, `trace-worker/…`,
   `trace-migrate/…` (`aws logs tail /ecs/trace --follow`).
 - `db:seed:demo` and `demo:reconcile` are dev only and are never run here.
+- CloudFront caches only `/_next/static/*` (content-hashed build files); everything else reaches the app.
+
+### Reading latency from the UK
+
+The app runs in Sydney, so from the UK most of a request's time is the network (~270 ms per round
+trip). API responses (all but webhooks and `/api/health`) carry `Server-Timing: app;dur=<ms>`, the time spent inside the app. In
+browser devtools open Network, pick a request and the Timing tab: "Server Timing" shows `app`, and
+the rest of "Waiting for server response" is the trip to Sydney and back. Per-route p50/p95 of the
+app's own time are on `/ops` under "API latency (server side)" and in `GET /api/ops/metrics`
+(`latency`). Request log lines carry `duration_ms`.
 
 ## Check
 
