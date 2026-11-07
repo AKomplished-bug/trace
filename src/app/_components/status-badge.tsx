@@ -50,3 +50,42 @@ export function Tag({ children, tone = "neutral" }: { children: ReactNode; tone?
   };
   return <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset ${tones[tone]}`}>{children}</span>;
 }
+
+type ReconciliationStatus = "MATCHED" | "AMOUNT_MISMATCH" | "STATUS_MISMATCH" | "MISSING_INTERNAL" | "MISSING_EXTERNAL" | "DUPLICATE" | "PENDING_EXTERNAL";
+
+const RECONCILIATION_TONES: Record<ReconciliationStatus, string> = {
+  MATCHED: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+  AMOUNT_MISMATCH: "bg-red-50 text-red-800 ring-red-200",
+  STATUS_MISMATCH: "bg-red-50 text-red-800 ring-red-200",
+  MISSING_INTERNAL: "bg-red-50 text-red-800 ring-red-200",
+  MISSING_EXTERNAL: "bg-red-50 text-red-800 ring-red-200",
+  DUPLICATE: "bg-red-50 text-red-800 ring-red-200",
+  PENDING_EXTERNAL: "bg-amber-50 text-amber-800 ring-amber-200",
+};
+
+/** A reconciliation record's result (Ops). */
+export function ReconciliationStatusBadge({ status }: { status: ReconciliationStatus }) {
+  return (
+    <span className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-xs font-medium ring-1 ring-inset ${RECONCILIATION_TONES[status]}`}>
+      {status}
+    </span>
+  );
+}
+
+type RunStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+
+const RUN_TONES: Record<RunStatus, string> = {
+  PENDING: "bg-neutral-100 text-neutral-700 ring-neutral-300",
+  RUNNING: "bg-amber-50 text-amber-800 ring-amber-200",
+  SUCCEEDED: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+  FAILED: "bg-red-50 text-red-800 ring-red-200",
+};
+
+/** A reconciliation run's status (Ops). */
+export function RunStatusBadge({ status }: { status: RunStatus }) {
+  return (
+    <span className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-xs font-medium ring-1 ring-inset ${RUN_TONES[status]}`}>
+      {status}
+    </span>
+  );
+}
