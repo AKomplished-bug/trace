@@ -1,3 +1,4 @@
+import { cn } from "@/lib/utils";
 import { amountView, STATUS_LABELS } from "./labels";
 import { Money } from "./money";
 
@@ -11,23 +12,23 @@ export function TransactionAmount({ t, className = "" }: Props) {
       return <Money cents={view.cents} signed className={className} />;
     case "held":
       return (
-        <span className={className}>
-          <Money cents={view.cents} className="text-amber-800" />
-          <span className="ml-1 align-middle text-xs font-normal text-amber-700">on hold</span>
+        <span className={cn("inline-flex flex-col items-end leading-tight", className)}>
+          <Money cents={view.cents} className="text-pending" />
+          <span className="text-xs font-normal text-pending">On hold</span>
         </span>
       );
     case "void":
       return (
-        <span className={className}>
-          <Money cents={view.cents} className="text-neutral-400 line-through" />
-          <span className="ml-1 align-middle text-xs font-normal text-neutral-500">{STATUS_LABELS[view.status].toLowerCase()}</span>
+        <span className={cn("inline-flex flex-col items-end leading-tight", className)}>
+          <Money cents={view.cents} className="text-muted-foreground line-through" />
+          <span className="text-xs font-normal text-muted-foreground">{STATUS_LABELS[view.status]}, no money moved</span>
         </span>
       );
     case "pending":
       return (
-        <span className={className}>
-          <Money cents={view.cents} className="text-neutral-500" />
-          <span className="ml-1 align-middle text-xs font-normal text-neutral-500">not moved yet</span>
+        <span className={cn("inline-flex flex-col items-end leading-tight", className)}>
+          <Money cents={view.cents} className="text-muted-foreground" />
+          <span className="text-xs font-normal text-muted-foreground">Not moved yet</span>
         </span>
       );
   }

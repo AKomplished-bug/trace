@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { amountView, counterparty } from "./labels";
+import { amountView, counterparty, EVENT_STATUS_LABELS, isInFlight, maskedAccount, RECONCILIATION_STATUS_LABELS, STATUS_LABELS, STATUS_TONES } from "./labels";
 
 const base = { amountCents: 8000, postedCents: null, holdCents: null, holdStatus: null } as const;
 
@@ -34,5 +34,35 @@ describe("counterparty", () => {
     expect(counterparty({ type: "CARD_PURCHASE", recipient: null, counterparty: "FIGMA.COM", provider: "increase" })).toBe("FIGMA.COM");
     expect(counterparty({ type: "CARD_PURCHASE", recipient: null, counterparty: null, provider: "demo" })).toBe("Virtual card");
     expect(counterparty({ type: "OUTBOUND_PAYMENT", recipient: "Acme Supplies", counterparty: null, provider: "increase" })).toBe("Acme Supplies");
+  });
+});
+
+describe("isInFlight", () => {
+  it("marks held and not-yet-moved amounts as pending, never posted or void ones", () => {
+    expect(isInFlight({ kind: "held", cents: 8000 })).toBe(true);
+    expect(isInFlight({ kind: "pending", cents: 8000, status: "PENDING" })).toBe(true);
+    expect(isInFlight({ kind: "posted", cents: -6500 })).toBe(false);
+    expect(isInFlight({ kind: "void", cents: 8000, status: "EXPIRED" })).toBe(false);
+  });
+});
+
+describe("status labels", () => {
+  it("gives every in-flight transaction status the pending tone", () => {
+    expect(["PENDING", "AUTHORIZED", "SUBMITTED"].map((s) => STATUS_TONES[s as keyof typeof STATUS_TONES])).toEqual(["pending", "pending", "pending"]);
+    expect(STATUS_TONES.FAILED).toBe("danger");
+    expect(STATUS_LABELS.SUBMITTED).toBe("Submitted");
+  });
+
+  it("names Ops statuses in plain English, not enum values", () => {
+    expect(EVENT_STATUS_LABELS.RETRY).toBe("Retrying");
+    expect(RECONCILIATION_STATUS_LABELS.AMOUNT_MISMATCH).toBe("Amount mismatch");
+    expect(RECONCILIATION_STATUS_LABELS.PENDING_EXTERNAL).toBe("Waiting on provider");
+  });
+});
+
+describe("maskedAccount", () => {
+  it("shows the last four digits only", () => {
+    expect(maskedAccount("6789")).toBe("•••• 6789");
+    expect(maskedAccount("123456789")).toBe("•••• 6789");
   });
 });

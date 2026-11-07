@@ -1,28 +1,21 @@
 import type { ReactNode } from "react";
-import { AppHeader } from "../_components/app-header";
-import { NavLink } from "../_components/nav-link";
+import { AppShell } from "../_components/app-shell";
+import type { NavItem } from "../_components/app-sidebar";
 import { requirePageSession } from "../_lib/auth";
+
+const NAV: NavItem[] = [
+  { href: "/ops", label: "Overview", icon: "overview", exact: true },
+  { href: "/ops/events", label: "Events", icon: "events" },
+  { href: "/ops/payments", label: "Payments", icon: "payments" },
+  { href: "/ops/reconciliation", label: "Reconciliation", icon: "reconciliation" },
+  { href: "/ops/investigations", label: "Investigations", icon: "investigations" },
+];
 
 export default async function OpsLayout({ children }: { children: ReactNode }) {
   const session = await requirePageSession("OPS");
   return (
-    <div className="min-h-full">
-      <AppHeader
-        home="/ops"
-        who={`${session.name} · Ops`}
-        nav={
-          <>
-            <NavLink href="/ops" exact>
-              Overview
-            </NavLink>
-            <NavLink href="/ops/reconciliation">Reconciliation</NavLink>
-            <NavLink href="/ops/investigations">Investigations</NavLink>
-            <NavLink href="/ops/events">Events</NavLink>
-            <NavLink href="/ops/payments">Payments</NavLink>
-          </>
-        }
-      />
-      <main className="mx-auto max-w-6xl px-4 py-6 sm:py-8">{children}</main>
-    </div>
+    <AppShell home="/ops" navLabel="Operations" items={NAV} context="Trace operations" role="Ops" userName={session.name} userDetail="Ops team">
+      {children}
+    </AppShell>
   );
 }

@@ -1,24 +1,29 @@
 import type { ReactNode } from "react";
-import { AppHeader } from "../_components/app-header";
-import { NavLink } from "../_components/nav-link";
+import { AppShell } from "../_components/app-shell";
+import type { NavItem } from "../_components/app-sidebar";
 import { requirePageSession } from "../_lib/auth";
+
+const NAV: NavItem[] = [
+  { href: "/", label: "Dashboard", icon: "dashboard" },
+  { href: "/activity", label: "Activity", icon: "activity", also: ["/transactions"] },
+  { href: "/payments", label: "Payments", icon: "payments" },
+  { href: "/balance", label: "Balance", icon: "balance" },
+];
 
 export default async function OwnerLayout({ children }: { children: ReactNode }) {
   const session = await requirePageSession("OWNER");
+  const business = session.businessName ?? "Your business";
   return (
-    <div className="min-h-full">
-      <AppHeader
-        home="/"
-        who={`${session.businessName} · ${session.name}`}
-        nav={
-          <>
-            <NavLink href="/">Overview</NavLink>
-            <NavLink href="/activity">Activity</NavLink>
-            <NavLink href="/payments">Payments</NavLink>
-          </>
-        }
-      />
-      <main className="mx-auto max-w-6xl px-4 py-6 sm:py-8">{children}</main>
-    </div>
+    <AppShell
+      home="/"
+      navLabel="Account"
+      items={NAV}
+      context={business}
+      role="Owner"
+      userName={session.name}
+      userDetail={`Owner of ${business}`}
+    >
+      {children}
+    </AppShell>
   );
 }

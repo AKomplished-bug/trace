@@ -1,7 +1,8 @@
+import { cn } from "@/lib/utils";
 import { formatCents } from "../../lib/money";
 
-/** An amount from integer cents, monospace with tabular figures. `signed` shows +/−. */
+/** An amount from integer cents with tabular figures. `signed` shows +/− and marks credits. */
 export function Money({ cents, signed, className = "" }: { cents: number; signed?: boolean; className?: string }) {
-  const tone = signed ? (cents > 0 ? "text-emerald-700" : cents < 0 ? "text-neutral-900" : "text-neutral-500") : "";
-  return <span className={`font-mono tabular-nums ${tone} ${className}`}>{formatCents(cents, { signed })}</span>;
+  const tone = signed ? (cents > 0 ? "text-success" : cents < 0 ? "text-foreground" : "text-muted-foreground") : "";
+  return <span className={cn("tabular-nums", tone, className)}>{formatCents(cents, { signed })}</span>;
 }
