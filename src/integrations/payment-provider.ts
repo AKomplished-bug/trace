@@ -24,6 +24,23 @@ export class WebhookVerificationError extends Error {
   }
 }
 
+// Check these errors with the `is…` functions below, by `name`, never `instanceof`: `apiDeps()`
+// shares one adapter per process, but the production build gives pages and route handlers their
+// own copy of this module, so an adapter a page created throws classes a route handler doesn't know.
+const REJECTED_NAMES: ReadonlySet<string> = new Set(["ProviderRejectedError", "IdempotencyKeyReusedError"]);
+
+export function isWebhookVerificationError(error: unknown): error is WebhookVerificationError {
+  return error instanceof Error && error.name === "WebhookVerificationError";
+}
+
+export function isProviderRejectedError(error: unknown): error is ProviderRejectedError {
+  return error instanceof Error && REJECTED_NAMES.has(error.name);
+}
+
+export function isPaymentProviderError(error: unknown): error is PaymentProviderError {
+  return error instanceof Error && (error.name === "PaymentProviderError" || REJECTED_NAMES.has(error.name));
+}
+
 /**
  * Provider-neutral view of a payment. `SUCCEEDED` and `FAILED` are final for our flow;
  * `PENDING` is anything still in progress.

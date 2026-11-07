@@ -1,5 +1,5 @@
 import type { Db } from "../../../db/client";
-import { WebhookVerificationError, type WebhookVerifier } from "../../../integrations/payment-provider";
+import { isWebhookVerificationError, type WebhookVerifier } from "../../../integrations/payment-provider";
 import { safeErrorForLog } from "../../../lib/errors";
 import { newId } from "../../../lib/ids";
 import type { Logger } from "../../../lib/logger";
@@ -35,7 +35,7 @@ export async function handleWebhook(deps: WebhookDeps, provider: string, request
     try {
       webhook = verifier.verifyWebhook(rawBody, request.headers);
     } catch (error) {
-      if (!(error instanceof WebhookVerificationError)) throw error;
+      if (!isWebhookVerificationError(error)) throw error;
       countOutcome("webhooks_received_total", { provider, outcome: "invalid_signature" });
       log.warn({ outcome: "invalid_signature" }, "webhook rejected: signature verification failed");
       return errorResponse(400, "invalid_signature", "Webhook signature verification failed");
