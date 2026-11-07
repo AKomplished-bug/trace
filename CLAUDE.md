@@ -25,7 +25,8 @@ reconciliation job: pulls provider records via API, compares with ours
 
 - **web** — Next.js (App Router). UI pages and the REST API (`src/app/api/**` route handlers).
 - **worker** — `src/worker/index.ts`, a long-lived Node process: event processor, outbound
-  payment submitter, hold expiry, reconciliation. Several instances must be safe at once.
+  payment submitter, hold expiry, reconciliation, Increase events poller. Several instances must be
+  safe at once.
 - **Postgres** — the only infrastructure. It is the source of truth and the queue. No Redis.
 
 ## Layout
@@ -119,7 +120,9 @@ authorization) moves no money, so it is a step on the purchase's trace, not a tr
 ## Idempotency (three layers)
 
 - **External events:** `UNIQUE(provider, external_event_id)`; every delivery, including
-  duplicates, is recorded in `event_deliveries` so Ops sees "received twice, no effect".
+  duplicates, is recorded in `event_deliveries` (`source` webhook or poll) so Ops sees "received
+  twice, no effect". Every webhook is a delivery; a poll only its first read of the event
+  (partial unique index), however often the overlap window re-reads it.
 - **Commands:** `POST /payments`, `POST /funding` require `Idempotency-Key`; stored only on
   `transactions` as `UNIQUE(account_id, idempotency_key)` with a `request_hash` of the body
   (payments link to their transaction). Same key + same body → same response; same key +
@@ -132,6 +135,16 @@ authorization) moves no money, so it is a step on the purchase's trace, not a tr
 
 - Webhook handlers: verify signature, insert raw event `ON CONFLICT DO NOTHING`, record the
   delivery, return 200. No other work.
+- Second delivery path, Increase only: the **events poller** (`services/increase-events-poller.ts`,
+  its own worker loop every 5 s) reads `GET /events` for the handled categories, oldest first, and
+  passes each item (the same Event object a webhook body is) to `ingestEvent` with source `poll`;
+  processing is unchanged. Cursor: `provider_cursors` (last `created_at` + event id), claimed like
+  an event (autocommitted claim, `claim_token` fence, lease; released after the pass) so one
+  instance polls at a time and no lock is held across the call. `GET /events` covers the whole
+  Increase group, not just our account and card, so foreign events end IGNORED (not ours); with no
+  cursor yet the first pass starts 1 h back. Each pass re-reads 60 s before the cursor
+  (whole-second timestamps, late-visible events), at most 10 pages and 30 s; the cursor moves
+  after each page under the claim. A failed pass is counted and retried on the next.
 - Worker claims **one event per pass**: `WHERE status IN ('RECEIVED','RETRY') AND
   next_attempt_at <= now()` (or `PROCESSING` with an expired lease) with `FOR UPDATE SKIP
   LOCKED`, setting `PROCESSING`, `attempts + 1`, `claim_token + 1` and a lease. `attempts` is
@@ -144,8 +157,14 @@ authorization) moves no money, so it is a step on the purchase's trace, not a tr
 - `apply` never catches a service error and carries on: a JS throw after DB writes doesn't abort
   the transaction by itself, so swallowing it would commit half an effect. Let it propagate; the
   worker rolls the transaction back and retries.
-- Event types with no handler are retried and end `FAILED` (they surface to Ops). Only types in
-  the provider's explicit ignore list become `IGNORED`.
+- Event types with no handler are retried and end `FAILED` (they surface to Ops). `IGNORED` is
+  for types in the provider's explicit ignore list, and for verified events about objects that
+  aren't ours: a handler throws a `NotOursEventError` (a card payment on a card that isn't one of
+  our `cards.provider_id`, a transfer from an account that isn't one of our `accounts.provider_id`
+  or without our `payment-…` key, a PaymentIntent without our
+  `transaction_id` metadata), and the worker marks it IGNORED at once with `last_error` "not ours:
+  …", counts `events_processed_total{outcome="not_ours"}` and never retries it. Decide "not ours"
+  before any lookup that would throw a retryable error.
 - **No network call inside a DB transaction or while holding a row lock.** Outbound provider
   calls happen in the worker, after commit, using a persisted intent (outbox) and the same
   idempotency key on retries. Outbound payments: a `PENDING` `payments` row is the intent; the
@@ -266,6 +285,7 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
   `replay_mismatch_total{scope}`, `reconciliation_requests_total{outcome}`,
   `reconciliation_runs_total{provider,outcome}`, `reconciliation_results_total{provider,status}`,
   `reconciliation_foreign_records_total{provider}`, `investigation_actions_total{action,outcome}`,
+  `increase_events_polled_total{outcome}` (new, duplicate, already_polled; per pass error, lease_lost),
   `auth_logins_total{outcome}` (success, wrong_password, unknown_user, no_password, throttled, …),
   `login_throttle_prunes_total{outcome}`, `login_throttle_rows_pruned_total`.
 - Request latency: `withRequestLog` times every API request (`performance.now()`, whole ms): `duration_ms`
@@ -310,12 +330,12 @@ npm run demo:reconcile # dev only: demo story + one reconciliation against the f
 npm run db:generate  # write a new SQL migration from src/db/schema.ts (review and commit it)
 npm run dev          # Next.js web + API
 npm run worker       # event worker (src/worker/index.ts)
-npm run increase:bootstrap  # once: link the seeded card to a funded Increase sandbox card
+npm run increase:bootstrap  # once: link the seeded card to a funded Increase sandbox card (entity: INCREASE_ENTITY_ID or the only active one)
 npm run typecheck
 npm run lint
 npm test             # Vitest: unit + integration against DATABASE_URL_TEST (needs db:up)
 npm run build
 ENV_FILE=.env infra/aws/bootstrap.sh  # AWS (profile corgi, ap-southeast-2): create the resources; re-runnable
 infra/aws/deploy.sh    # build + push the commit's image, migrate, roll trace-web and trace-worker
-infra/aws/run-task.sh migrate|seed  # one-off task on the image (seed once after the first deploy)
+infra/aws/run-task.sh migrate|seed|increase-bootstrap  # one-off task on the image (seed, then increase-bootstrap, once after the first deploy)
 ```

@@ -1637,3 +1637,114 @@ in CI).
 **Tradeoff**
 The axe and keyboard checks ran from a scratch script outside the repo, so they aren't repeatable
 in CI yet.
+
+## 2026-11-07 — Increase events are also polled, into the webhook's ingestion path
+
+**Decision**
+A worker loop reads Increase's `GET /events` every 5 s (`card_payment.*`, `ach_transfer.*`,
+`order_by` created_at ascending, 100 per page) and passes each item to `ingestEvent`, the function
+the verified webhook uses, with `event_deliveries.source = 'poll'`. Processing is unchanged: the
+worker's handlers re-fetch the object as for a webhook.
+
+**Why**
+Sandbox webhooks aren't retried, and the anonymous sandbox we were given can't create an event
+subscription at all (409 "Exceeded number of allowed webhook subscriptions 0"), so without polling
+no card or ACH step would ever reach the ledger. A listed Event is the same object a webhook body
+is (`id`, `category`, `associated_object_*`, `created_at`), so the stored payload, the dedup key
+and the handlers are shared and a webhook and a poll of one event collapse to one row.
+
+**Alternatives**
+Polling the objects (card payments, transfers) instead of events: the reconciliation lists already
+do that, but every changed object would need a synthetic event. A separate poll queue or handler:
+two processing paths to keep identical.
+
+**Tradeoff**
+Up to ~5 s more latency without webhooks, and one list call per pass per worker that holds the
+cursor. Increase's ordered list returns a `next_cursor` even on its last page (seen live), so the
+adapter treats a page shorter than the limit as the last; the fake does the same.
+
+## 2026-11-07 — The poll cursor is its own leased row, re-read with a 60 s overlap
+
+**Decision**
+`provider_cursors(provider)` holds the last polled event's `created_at` and id. A pass claims the
+row like an event: one autocommitted `INSERT … ON CONFLICT DO UPDATE … WHERE lease expired`
+bumps `claim_token` and sets a 120 s lease; the reads run with no transaction or lock open; after
+each page the cursor moves `WHERE claim_token = <ours>`; the lease is released at the end. Each pass
+starts 60 s before the cursor. Ingestion records a poll delivery only the first time
+(`event_deliveries_one_poll_key`, partial unique index on `external_event_id WHERE source =
+'poll'`); re-reads count as `already_polled`.
+
+**Why**
+Deriving the cursor from the newest stored Increase event would let a webhook that arrives early
+move it past events the poller hasn't read, and needs an index on a payload field. A row lock or
+advisory lock held for the pass would be held across the provider call (forbidden); the lease and
+fence are the pattern events, payments and reconciliation runs already use, so a worker whose
+lease lapsed can't move the cursor. Increase's `created_at` has whole seconds and an event can
+become visible after a later one, so an exclusive "after the cursor" read could miss events; the
+overlap re-reads them and the unique keys make that harmless.
+
+**Alternatives**
+Advisory lock per pass; storing Increase's opaque `next_cursor`; no overlap (tuple cursor on
+created_at + id, which still misses late-visible events).
+
+**Tradeoff**
+Every pass re-reads the last 60 s of events (cheap at sandbox volume; `already_polled` grows with
+it). More than 1,000 events within one 60 s window would make each 10-page pass re-read the same
+window and never advance; it would need a larger page cap or a tuple cursor. With no cursor yet,
+the first pass starts 1 h back: `GET /events` covers the whole Increase group (every account and
+card, ours or not), so replaying its history would only ingest other people's events. Limits: an
+event that becomes visible more than 60 s after a later one has moved the cursor is missed
+(reconciliation, which lists the objects themselves, is the backstop), and more than 1,000 events
+in one 60 s window stall the cursor.
+
+## 2026-11-07 — The bootstrap's sandbox account gets an explicit entity; we never create one
+
+**Decision**
+`npm run increase:bootstrap` creates the sandbox account with `entity_id` = `INCREASE_ENTITY_ID`
+if set, else the only active entity from `GET /entities`; with none, or more than one, it stops with
+a message naming the fix. Creating the entity is a one-off manual step (README). `run-task.sh
+increase-bootstrap` runs it on the `trace-migrate` definition, which now also gets the
+`INCREASE_API_KEY` secret; the AWS task relies on the first-active-entity fallback, so
+`INCREASE_ENTITY_ID` isn't wired there.
+
+**Why**
+An anonymous sandbox has no default entity, so `POST /accounts` without one fails (409 "No
+entity_id provided or default entity available"). An entity is a legal-person record with
+required details; inventing one in code would hide that choice.
+
+**Alternatives**
+Create a sandbox corporation entity in the bootstrap; require `INCREASE_ENTITY_ID`.
+
+**Tradeoff**
+A sandbox with several active entities needs `INCREASE_ENTITY_ID` (a one-line setting) rather than
+having the bootstrap guess; the log names the entity it used.
+
+## 2026-11-07 — Verified events about objects that aren't ours are IGNORED, not retried or failed
+
+**Decision**
+A handler that finds a verified event isn't about one of our objects throws a `NotOursEventError`
+subclass, and the worker marks the event IGNORED at once (`last_error` "not ours: …") and counts
+`events_processed_total{outcome="not_ours"}`. The subclasses are `CardNotOursError` (a card payment
+whose `card_id` is no `cards.provider_id` of ours, checked before any other lookup),
+`PaymentNotOursError` (a transfer from an Increase account that is no `accounts.provider_id` of
+ours, checked first, or one without our `payment-<id>` key) and `FundingNotOursError` (a
+PaymentIntent without our `transaction_id` metadata). The last two were permanent (FAILED) before;
+the unknown card was retryable (10 attempts, ~36 min, then FAILED).
+
+**Why**
+The Increase events poller reads the whole sandbox group, so events for other accounts and cards
+(the probe card, anything someone else creates) arrive routinely. Retrying them can't make them
+ours and FAILED would fill the Ops exceptions with noise; IGNORED with a reason and a counter keeps
+them visible without asking anyone to act.
+
+**Alternatives**
+Filter in the poller (it would have to re-fetch every object, which is the handler's job);
+`PermanentEventError` (FAILED for Ops); keep retrying unknown cards in case the bootstrap links
+them later.
+
+**Tradeoff**
+A card payment that arrives before its card is linked is ignored rather than retried; the bootstrap
+links the card before it can be used, so this doesn't happen in our flow. Production shares the
+sandbox group with local databases, whose transfers carry `payment-<uuid>` keys too; they leave
+from other Increase accounts, so the account check ignores them. A transfer from our own account
+whose key names a payment we don't have is still retried, then FAILED: that is a real gap for Ops.
