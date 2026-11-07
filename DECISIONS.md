@@ -1197,7 +1197,8 @@ encoding Stripe and Increase accept for these filters (only the SDKs and our fak
 One Docker image on ECS Fargate (ARM64) as two services, `trace-web` (`next start`, 0.25 vCPU /
 1 GB) and `trace-worker` (0.25 vCPU / 0.5 GB), one task each, with RDS Postgres 16 (`db.t4g.micro`,
 single-AZ, 20 GB gp3, encrypted, not public). Migrations run as a one-off task before the services
-roll. Plain AWS CLI scripts in `infra/aws/`, re-runnable. The trial database has **no backups and no
+roll. The worker runs as `node --import tsx`, so it is the process that gets SIGTERM, and has the
+Fargate maximum `stopTimeout` (120 s), so a deploy lets a reconciliation run in progress finish. Plain AWS CLI scripts in `infra/aws/`, re-runnable. The trial database has **no backups and no
 deletion protection**: the account's Free plan refused a 7-day backup retention
 (`FreeTierRestrictionError` on `CreateDBInstance`), and the demo holds only seeded and sandbox data.
 
