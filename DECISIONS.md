@@ -290,6 +290,7 @@ no PaymentIntent yet, so it can't move one onto another's payment.
 ## 2026-11-07 — Demo auth: HMAC-signed session cookie
 
 **Decision**
+(Sign-in is now by email and password; see "Per-user passwords" below. The cookie is unchanged.)
 `/login` lists the seeded users; picking one (no password — it's a sandbox) sets
 `trace_session = base64url(claims).base64url(HMAC-SHA256(SESSION_SECRET))`, HttpOnly,
 SameSite=Lax, Secure in production, 12 h. Claims are `{ userId, role, accountId, expiresAt }`,
@@ -1242,8 +1243,8 @@ credentials in clear).
 
 **Tradeoff**
 CloudFront → ALB is plain HTTP inside AWS's network. The prefix list admits any CloudFront
-distribution, not only ours; a secret origin header checked by an ALB listener rule would close
-that.
+distribution, not only ours, so our distribution also sends a secret `X-Origin-Verify` header and
+the ALB forwards only requests carrying it (see "The client IP is CloudFront-Viewer-Address").
 
 ## 2026-11-07 — One region (ap-southeast-2), public subnets, no NAT gateway
 
@@ -1319,3 +1320,140 @@ database pool per bundle, against the one-pool rule).
 The names are string literals kept in step with the classes by hand; a new subclass of
 `ProviderRejectedError` must be added to `REJECTED_NAMES`. Errors thrown by services are still
 checked with `instanceof`: a route imports those itself, so they come from its own copy.
+
+## 2026-11-07 — Per-user passwords, not a shared access code or Cognito
+
+**Decision**
+`POST /api/auth/login` takes `{ email, password }` and checks it against `users.password_hash`;
+the `/login` user picker is gone. On success it sets the existing signed session cookie; every
+failure (unknown email, wrong password, user without a password) is the same 401
+`invalid_credentials`. A user with a null hash can't sign in. The seeded owner's and Ops user's
+passwords come from `TRACE_OWNER_PASSWORD` / `TRACE_OPS_PASSWORD` at `db:seed`.
+
+**Why**
+The deployed app let anyone with the URL pick a user and be signed in, including as Ops. Per-user
+passwords keep the roles apart (an owner can't become Ops), fit the cookie and `requireOwner` /
+`requireOps` unchanged, and need no new infrastructure.
+
+**Alternatives**
+One shared access code in front of the picker (one leak opens every role, and nothing ties a
+session to who used it); Cognito or another identity provider (a user pool, hosted UI, callback
+and token handling: far more moving parts than two demo users need); CloudFront basic auth (same
+problem as a shared code, and it breaks webhooks).
+
+**Tradeoff**
+We own password storage and brute-force protection (the next two entries). No self-service reset:
+a password changes only by re-seeding with a new value. Sessions still can't be revoked before
+they expire except by rotating `SESSION_SECRET`.
+
+## 2026-11-07 — scrypt with N=2^15, r=8, p=3, parameters stored with the hash
+
+**Decision**
+`lib/password.ts` hashes with Node's built-in `crypto.scrypt` (no dependency): a random 16-byte
+salt per hash, a 32-byte key, stored as `scrypt$N$r$p$salt$hash` (base64url). Verification reads
+the parameters from the stored string and compares with `timingSafeEqual`. With no stored hash it
+still derives a key with the current parameters and answers false, so an unknown email or a user
+without a password costs the same time as a wrong password. A malformed stored hash throws (500),
+never matches.
+
+**Why**
+N=2^15, r=8, p=3 is one of OWASP's equivalent scrypt settings: 32 MiB per hash, ~135 ms on a
+laptop core, a few hundred ms on the 0.25 vCPU web task. Storing the parameters lets them be
+raised later without invalidating existing hashes.
+
+**Alternatives**
+OWASP's first choice N=2^17 (128 MiB per attempt on a 1 GiB task); bcrypt or argon2 (a native
+dependency); PBKDF2 (not memory-hard).
+
+**Tradeoff**
+Each attempt costs real CPU on a small task, and scrypt runs on libuv's 4-thread pool, so a flood
+of attempts slows sign-in for everyone; the throttle (below) bounds it per email and per IP, not
+globally.
+
+## 2026-11-07 — Login throttle in Postgres, counted before the password is checked
+
+**Decision**
+`login_throttles` holds one row per key: scope `email` or `ip`, and an HMAC-SHA256 of the
+normalized email or the client IP under `SESSION_SECRET` (the table stores neither). Each attempt,
+before the password check, runs `reserveLoginAttempt` in one transaction: insert missing rows,
+lock the keys' rows (`FOR UPDATE`, email before ip), and if any key is locked, count nothing and
+answer 429 `too_many_attempts`; otherwise add one to each key (restarting from 1 once its 15-minute
+window or lock has passed), and lock a key for 15 minutes when it reaches its limit: 10 per email,
+50 per IP. A success gives its attempt back (`releaseLoginAttempt`); if that fails it is logged and
+the sign-in still succeeds. If the reservation itself fails, the login answers 503
+`login_unavailable` and checks no password. Unknown emails are counted the same way.
+`auth_logins_total{outcome}` counts every outcome.
+
+**Why**
+Several web instances share nothing but Postgres. Counting first, under the row lock, is what makes
+it race-safe: a check-then-record design lets N concurrent guesses all pass the check before any
+is recorded (the test fires 25 at once and exactly 10 reach the password check). Not counting
+throttled attempts means a blocked IP can't keep using up a victim's email budget. Counting unknown
+emails means a lockout doesn't reveal which accounts exist. Failing closed means a database error
+can never stand in for "not throttled", let alone a successful sign-in.
+
+**Alternatives**
+A row per failure counted over a sliding window (exact, but the table grows with every attempt and
+needs pruning); check-then-record without locks (racy); Redis (not in this stack); a CAPTCHA.
+
+**Tradeoff**
+The window is fixed from a key's first attempt, not sliding, so up to 2 × (limit − 1) attempts can
+straddle a window boundary without a lockout. Anyone can lock an email for 15 minutes with 10
+wrong guesses (the price of per-account lockout); an office behind one IP shares the 50. The table
+grows with every distinct email and IP tried (an attacker with many IPs adds rows at will), so the
+worker deletes rows whose window has passed and that aren't locked, every 10 minutes in batches of
+1,000 (`pruneLoginThrottles`, SKIP LOCKED; `login_throttle_rows_pruned_total`). A login takes its
+rows' locks with a no-op upsert first, so the pruner can't delete a row between its insert and its
+lock and lose that attempt.
+
+## 2026-11-07 — The client IP is CloudFront-Viewer-Address
+
+**Decision**
+`viewerIp` reads only `CloudFront-Viewer-Address` (`ip:port`, set by CloudFront), and the
+distribution's origin request policy is the managed AllViewerAndCloudFrontHeaders-2022-06 so the
+header reaches the app (bootstrap moves an existing distribution onto it). Without the header
+(local dev, or before the policy change) there is no per-IP key and only the email limit applies.
+The header is trusted only because the ALB now admits only our distribution: bootstrap generates
+`trace/CLOUDFRONT_ORIGIN_SECRET` (never overwritten), the origin sends it as `X-Origin-Verify`,
+listener rule 1 forwards requests whose header matches, and the listener's default action is a
+fixed 403. On an existing setup bootstrap adds the rule, updates the distribution in place, waits
+for it to deploy, and only then switches the default to 403, so no request is dropped. The app
+never reads the secret.
+
+**Why**
+CloudFront sets this header itself from the connection it accepted, and the origin secret means
+only our distribution's requests reach the app. `X-Forwarded-For` arrives as whatever the client
+sent, followed by the viewer IP CloudFront appended and then the edge IP the ALB appended, so
+reading it means trusting a position, which breaks silently if a hop is added or removed.
+
+**Alternatives**
+`X-Forwarded-For`, second entry from the right; the ALB's view of the peer (always a CloudFront
+edge, so every visitor would share one key).
+
+**Tradeoff**
+The secret sits in the distribution and listener configuration, readable by anyone with those AWS
+read permissions; rotating it means a new secret value and a bootstrap run (the rule and the
+distribution update to it, with a short window where edges still on the old value get 403).
+
+## 2026-11-07 — Seeded passwords live in Secrets Manager and reach only the seed task
+
+**Decision**
+Bootstrap generates `trace/TRACE_OWNER_PASSWORD` and `trace/TRACE_OPS_PASSWORD` once (20
+characters from a-z and 2-9 without look-alikes, in groups of five, about 99 bits) through files,
+never argv, and never overwrites them. On every run it rewrites `CREDENTIALS` (default
+`.demo-credentials` next to the repo, outside it so no Docker build context or image can contain
+it) from the stored secrets, mode 600, for handing to reviewers. Only the `trace-migrate` task definition (migrate and seed)
+references them; web and worker never get them. `db:seed` refuses production without both, and
+the test passwords (`testPasswordHashes`) refuse production too.
+
+**Why**
+The web process only ever needs the hash, which is in the database. Keeping the plaintext out of
+the long-running tasks narrows who can read it. Readable groups survive being read out or typed.
+
+**Alternatives**
+Passwords in the web task's env (more exposure for no use); a `TRACE_*_PASSWORD_HASH` secret (the
+operator would need a hashing tool; the seed already has one).
+
+**Tradeoff**
+Rotation is two steps (put a new secret value, then `run-task.sh seed`), and the plaintext lives in
+Secrets Manager and in a local file as well as being hashed in the database.

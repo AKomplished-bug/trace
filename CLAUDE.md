@@ -216,16 +216,31 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
 - Every provider call goes through its adapter, has a timeout (default 10 s), logs the provider
   request id with our entity ids, and handles failure where it happens.
 - Secrets only from env (`DATABASE_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-  `INCREASE_API_KEY`, `INCREASE_WEBHOOK_SECRET`, `SESSION_SECRET`). Validated
+  `INCREASE_API_KEY`, `INCREASE_WEBHOOK_SECRET`, `SESSION_SECRET`; `TRACE_OWNER_PASSWORD` and
+  `TRACE_OPS_PASSWORD` for `db:seed` only, `parseSeedConfig`: ≥ 12 characters, required in
+  production, and only the migrate/seed task gets them). Validated
   at startup with zod; fail fast with a message naming the missing variable. Never in client code.
 
 ## API conventions
 
 - REST under `/api`. Validate every input with zod at the route; errors as
   `{ error: { code, message } }`. Never return stack traces or internal errors.
-- Demo auth: signed session cookie; roles `OWNER` (scoped to one business) and `OPS`.
-  `/api/ops/**` requires `OPS`. Auth and Ops POSTs also refuse a cross-origin `Origin` with 403
-  (`checkSameOrigin` in `app/api/handler.ts`; in Ops handlers right after `requireOps`).
+- Auth: `POST /api/auth/login` `{ email, password }` → signed session cookie; roles `OWNER`
+  (scoped to one business) and `OPS`. `/api/ops/**` requires `OPS`. Auth and Ops POSTs also refuse
+  a cross-origin `Origin` with 403 (`checkSameOrigin` in `app/api/handler.ts`; in Ops handlers
+  right after `requireOps`).
+- Passwords: `users.password_hash` = `scrypt$N$r$p$salt$hash` (`lib/password.ts`, Node scrypt,
+  verify with `timingSafeEqual`); null = can't sign in. Unknown users and users without a hash
+  still run scrypt. Every failure is one 401 `invalid_credentials`; the cookie is set on success
+  only. Never log the email or the password; log the user id on success.
+- Login throttle (`services/login-throttle.ts`, table `login_throttles`, keyed by an HMAC of the
+  email or client IP, never the value): the attempt is counted before the password is checked,
+  under the keys' row locks (email before ip), so concurrent attempts can't overrun it. 10
+  attempts per email or 50 per IP in 15 min lock that key for 15 min (429 `too_many_attempts`); a
+  throttled attempt counts against no key; a success gives its attempt back. If the attempt can't
+  be counted, the login fails closed (503). The client IP is `CloudFront-Viewer-Address` only,
+  trusted because the ALB forwards only requests with our distribution's `X-Origin-Verify` secret.
+  The worker deletes expired, unlocked rows every 10 min (`pruneLoginThrottles`).
 - `external_events.payload` is never selected, returned or rendered (it can hold personal data);
   the Ops event viewer shows "payload withheld".
 - Ops actions write `audit_events` only through `recordAudit` (`services/audit.ts`), inside the
@@ -250,7 +265,9 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
   `ops_event_retries_total{outcome}`, `ops_payment_actions_total{action,outcome}`,
   `replay_mismatch_total{scope}`, `reconciliation_requests_total{outcome}`,
   `reconciliation_runs_total{provider,outcome}`, `reconciliation_results_total{provider,status}`,
-  `reconciliation_foreign_records_total{provider}`, `investigation_actions_total{action,outcome}`.
+  `reconciliation_foreign_records_total{provider}`, `investigation_actions_total{action,outcome}`,
+  `auth_logins_total{outcome}` (success, wrong_password, unknown_user, no_password, throttled, …),
+  `login_throttle_prunes_total{outcome}`, `login_throttle_rows_pruned_total`.
 - State is counted from the tables, not counters: events by status and the payment backlog
   (`given_up_payments` …). `GET /api/ops/metrics` (OPS, JSON) returns both; `/ops` shows them.
 
@@ -280,7 +297,7 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
 npm ci && cp .env.example .env   # first time
 npm run db:up        # Postgres 16 in docker on localhost:5433 (databases trace, trace_test)
 npm run db:migrate   # apply src/db/migrations to DATABASE_URL
-npm run db:seed      # idempotent demo data (Acme Inc., owner + ops users, $0 account, card)
+npm run db:seed      # idempotent demo data (Acme Inc., owner + ops users, $0 account, card); passwords from TRACE_*_PASSWORD
 npm run db:seed:demo # optional, dev only: base seed + the $500 → $80 auth → $65 settle story
 npm run demo:reconcile # dev only: demo story + one reconciliation against the fakes (Increase says $80)
 npm run db:generate  # write a new SQL migration from src/db/schema.ts (review and commit it)
