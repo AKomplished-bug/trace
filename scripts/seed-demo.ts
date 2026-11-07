@@ -1,5 +1,5 @@
 import { createDb, createPool } from "../src/db/client";
-import { seed, SEED } from "../src/db/seed";
+import { seed, SEED, testPasswordHashes } from "../src/db/seed";
 import { databaseConfig } from "../src/lib/config";
 import { safeErrorForLog } from "../src/lib/errors";
 import { logger } from "../src/lib/logger";
@@ -9,7 +9,7 @@ import { seedDemoStory } from "../src/services/demo";
 const pool = createPool(databaseConfig().DATABASE_URL, 1);
 try {
   const db = createDb(pool);
-  await seed(db);
+  await seed(db, await testPasswordHashes());
   await seedDemoStory(db);
   logger.info({ business_id: SEED.businessId, account_id: SEED.accountId }, "demo seed applied");
 } catch (error) {

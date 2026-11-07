@@ -1,5 +1,5 @@
 import { createDb, createPool } from "../src/db/client";
-import { seed, SEED } from "../src/db/seed";
+import { seed, SEED, testPasswordHashes } from "../src/db/seed";
 import { databaseConfig } from "../src/lib/config";
 import { safeErrorForLog } from "../src/lib/errors";
 import { newId } from "../src/lib/ids";
@@ -15,7 +15,7 @@ const WINDOW_DAYS = 30;
 const pool = createPool(databaseConfig().DATABASE_URL, 1);
 try {
   const db = createDb(pool);
-  await seed(db);
+  await seed(db, await testPasswordHashes());
   await seedDemoStory(db);
   const end = new Date();
   const window = { start: new Date(end.getTime() - WINDOW_DAYS * 86_400_000), end };
