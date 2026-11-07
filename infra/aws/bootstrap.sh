@@ -222,9 +222,11 @@ jq --arg orp "$ORIGIN_REQUEST_POLICY" --arg static "$CACHE_POLICY_CACHING_OPTIMI
   | .Origins.Items[0].CustomHeaders = {Quantity: 1,
       Items: [{HeaderName: "X-Origin-Verify", HeaderValue: ($secret | rtrimstr("\n"))}]}
   | if any(.CacheBehaviors.Items[]?; .PathPattern == "/_next/static/*") then . else
-      .CacheBehaviors = {Quantity: (.CacheBehaviors.Quantity + 1), Items: ((.CacheBehaviors.Items // []) + [{
-        PathPattern: "/_next/static/*", TargetOriginId: "alb", ViewerProtocolPolicy: "redirect-to-https",
-        Compress: true, CachePolicyId: $static,
+      # Start from the default behaviour so every field UpdateDistribution requires (SmoothStreaming,
+      # TrustedSigners, FunctionAssociations ...) is present, then cache by path only.
+      .CacheBehaviors = {Quantity: (.CacheBehaviors.Quantity + 1), Items: ((.CacheBehaviors.Items // []) + [
+        .DefaultCacheBehavior | del(.OriginRequestPolicyId) + {
+        PathPattern: "/_next/static/*", Compress: true, CachePolicyId: $static,
         AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"], CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}}])}
     end' \
   "$WORK/cf-current.json" >"$WORK/cf-update.json"
