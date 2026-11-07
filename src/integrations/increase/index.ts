@@ -401,12 +401,29 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
   }
 
   /**
-   * Sandbox setup for the demo (npm run increase:bootstrap): an account, an account number, an
-   * inbound ACH credit so the account can cover authorizations (Increase declines what its own
-   * balance can't cover; our ledger is separate), and a virtual card on it.
+   * The entity that owns the sandbox account the bootstrap creates: `configured` if given, else the
+   * only active one (https://increase.com/documentation/api/entities#list-entities); with several it
+   * refuses rather than guess. An anonymous sandbox has no default entity, so account creation needs
+   * one; we never create it (README).
    */
-  async bootstrapSandboxCard(input: { name: string; fundingCents: number }): Promise<{ accountId: string; cardId: string; last4: string }> {
-    const { data: account } = await this.call("create account", () => this.increase().accounts.create({ name: input.name }));
+  async resolveEntityId(configured: string | undefined): Promise<{ entityId: string; source: "configured" | "listed" }> {
+    if (configured) return { entityId: configured, source: "configured" };
+    const { data } = await this.call("list entities", () => this.increase().entities.list({ status: { in: ["active"] }, limit: 2 }));
+    const [entity, another] = data.data;
+    if (!entity) throw new Error("No active Increase entity: create one in the sandbox (see README) or set INCREASE_ENTITY_ID");
+    if (another) throw new Error("More than one active Increase entity: set INCREASE_ENTITY_ID to the one that should own the account");
+    return { entityId: entity.id, source: "listed" };
+  }
+
+  /**
+   * Sandbox setup for the demo (npm run increase:bootstrap): an account owned by `entityId`, an
+   * account number, an inbound ACH credit so the account can cover authorizations (Increase
+   * declines what its own balance can't cover; our ledger is separate), and a virtual card on it.
+   */
+  async bootstrapSandboxCard(input: { name: string; fundingCents: number; entityId: string }): Promise<{ accountId: string; cardId: string; last4: string }> {
+    const { data: account } = await this.call("create account", () =>
+      this.increase().accounts.create({ name: input.name, entity_id: input.entityId }),
+    );
     const { data: accountNumber } = await this.call("create account number", () =>
       this.increase().accountNumbers.create({ account_id: account.id, name: input.name }),
     );

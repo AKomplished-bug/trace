@@ -31,6 +31,8 @@ export interface FakeIncrease {
   cardPayments: Map<string, CardPaymentJson>;
   /** ACH transfers by id; tests may edit them to simulate Increase's view. */
   achTransfers: Map<string, AchTransferJson>;
+  /** Entities (`{ id, status }`), newest first as Increase lists them; none at first, like an anonymous sandbox. */
+  entities: Json[];
   requests: Array<{ method: string; path: string; body: Json; idempotencyKey?: string | null }>;
   /**
    * How the next request behaves: succeed, decline (authorizations only), never answer
@@ -46,7 +48,7 @@ const detail = (element: Json) => element[element.category as string] as Json;
 
 export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number } = {}): FakeIncrease {
   let counter = 0;
-  const fake: FakeIncrease = { adapter: undefined as unknown as IncreaseAdapter, cardPayments: new Map(), achTransfers: new Map(), requests: [], next: "succeed" };
+  const fake: FakeIncrease = { adapter: undefined as unknown as IncreaseAdapter, cardPayments: new Map(), achTransfers: new Map(), entities: [], requests: [], next: "succeed" };
   // Idempotency-Key → the request body it was first used with and the transfer it created.
   const achKeys = new Map<string, { body: string; id: string }>();
 
@@ -140,6 +142,11 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
       const account = url.searchParams.get("account_id");
       return list(url, [...fake.achTransfers.values()].filter((t) => (key === null || t.idempotency_key === key) && (account === null || t.account_id === account)));
     }
+    if (method === "GET" && url.pathname === "/entities") {
+      const statuses = url.searchParams.get("status.in")?.split(",");
+      const limit = Number(url.searchParams.get("limit") ?? 100);
+      return respond(200, { data: fake.entities.filter((e) => !statuses || statuses.includes(e.status as string)).slice(0, limit), next_cursor: null });
+    }
     const achRetrieve = /^\/ach_transfers\/([^/]+)$/.exec(url.pathname);
     if (method === "GET" && achRetrieve) {
       const transfer = fake.achTransfers.get(achRetrieve[1]);
@@ -184,6 +191,8 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
 
     switch (url.pathname) {
       case "/accounts":
+        // An anonymous sandbox has no default entity: account creation needs entity_id.
+        if (typeof body.entity_id !== "string") return respond(409, { status: 409, type: "invalid_operation_error", title: "No entity_id provided or default entity available." });
         return respond(200, { id: `account_fake_${++counter}`, type: "account", name: body.name });
       case "/account_numbers":
         return respond(200, { id: `account_number_fake_${++counter}`, type: "account_number", account_id: body.account_id });

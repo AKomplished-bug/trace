@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EXAMPLE_SESSION_SECRET, parseConfig, parseDatabaseConfig, parseSeedConfig, parseSessionConfig } from "./config";
+import { EXAMPLE_SESSION_SECRET, parseConfig, parseDatabaseConfig, parseIncreaseBootstrapConfig, parseSeedConfig, parseSessionConfig } from "./config";
 
 const valid = {
   DATABASE_URL: "postgres://trace:trace@localhost:5433/trace",
@@ -78,6 +78,13 @@ describe("scoped configs", () => {
     expect(parseDatabaseConfig({ DATABASE_URL: valid.DATABASE_URL })).toEqual({ DATABASE_URL: valid.DATABASE_URL });
     expect(() => parseSessionConfig({})).toThrow("Invalid environment: SESSION_SECRET is required");
     expect(() => parseDatabaseConfig({})).toThrow("Invalid environment: DATABASE_URL is required");
+  });
+
+  it("make INCREASE_ENTITY_ID optional for the Increase bootstrap, counting empty as unset", () => {
+    const env = { DATABASE_URL: valid.DATABASE_URL, INCREASE_API_KEY: "increase_key" };
+    expect(parseIncreaseBootstrapConfig({ ...env, INCREASE_ENTITY_ID: "" }).INCREASE_ENTITY_ID).toBeUndefined();
+    expect(parseIncreaseBootstrapConfig({ ...env, INCREASE_ENTITY_ID: "sandbox_entity_x" }).INCREASE_ENTITY_ID).toBe("sandbox_entity_x");
+    expect(() => parseIncreaseBootstrapConfig({ DATABASE_URL: valid.DATABASE_URL })).toThrow("Invalid environment: INCREASE_API_KEY is required");
   });
 });
 
