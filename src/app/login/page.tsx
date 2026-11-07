@@ -1,47 +1,44 @@
-import { connection } from "next/server";
-import { apiDeps } from "../api/deps";
-import { listUsers } from "../../services/users";
-import { Tag } from "../_components/status-badge";
-
 export const metadata = { title: "Sign in · Trace" };
 
-export default async function LoginPage() {
-  await connection();
-  const users = await listUsers(apiDeps().db);
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+// Codes the login form post redirects back with (api/auth/handle-auth.ts); anything else shows nothing.
+const ERRORS: Record<string, string> = {
+  invalid_credentials: "Email or password is incorrect.",
+  too_many_attempts: "Too many sign-in attempts. Try again later.",
+  login_unavailable: "Sign-in is unavailable right now. Try again shortly.",
+};
+
+const input = "mt-1 block w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-sm";
+
+export default async function LoginPage({ searchParams }: { searchParams: SearchParams }) {
+  const raw = (await searchParams).error;
+  const error = ERRORS[Array.isArray(raw) ? (raw[0] ?? "") : (raw ?? "")];
   return (
     <main className="mx-auto flex min-h-full max-w-md flex-col justify-center px-4 py-16">
       <p className="font-mono text-sm font-semibold tracking-tight">
         trace<span className="text-emerald-600">_</span>
       </p>
       <h1 className="mt-6 text-xl font-semibold tracking-tight">Sign in to the sandbox</h1>
-      <p className="mt-2 text-sm text-neutral-600">
-        Pick a demo user. There are no passwords here: the business, its money and the providers are all test data.
-      </p>
-      {users.length === 0 ? (
-        <p className="mt-6 rounded border border-dashed border-neutral-300 p-4 text-sm text-neutral-600">
-          No demo users yet. Run <code className="font-mono">npm run db:seed</code> and reload.
-        </p>
-      ) : (
-        <ul className="mt-6 divide-y divide-neutral-200 overflow-hidden rounded-md border border-neutral-200 bg-white">
-          {users.map((user) => (
-            <li key={user.id}>
-              <form method="post" action="/api/auth/login">
-                <input type="hidden" name="userId" value={user.id} />
-                <button type="submit" className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-neutral-50">
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium">{user.name}</span>
-                    <span className="block truncate font-mono text-xs text-neutral-500">{user.email}</span>
-                  </span>
-                  <span className="text-right text-xs text-neutral-500">
-                    <Tag tone={user.role === "OPS" ? "amber" : "neutral"}>{user.role === "OPS" ? "Ops" : "Owner"}</Tag>
-                    <span className="mt-1 block">{user.businessName ?? "Trace operations"}</span>
-                  </span>
-                </button>
-              </form>
-            </li>
-          ))}
-        </ul>
-      )}
+      <p className="mt-2 text-sm text-neutral-600">The business, its money and the providers are all test data.</p>
+      <form method="post" action="/api/auth/login" className="mt-6 grid gap-3">
+        <label className="text-xs text-neutral-600">
+          Email
+          <input name="email" type="email" required autoComplete="username" className={input} />
+        </label>
+        <label className="text-xs text-neutral-600">
+          Password
+          <input name="password" type="password" required autoComplete="current-password" className={input} />
+        </label>
+        {error && (
+          <p role="alert" className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+            {error}
+          </p>
+        )}
+        <button type="submit" className="rounded bg-neutral-900 px-3 py-2 text-sm font-medium text-white hover:bg-neutral-700">
+          Sign in
+        </button>
+      </form>
     </main>
   );
 }
