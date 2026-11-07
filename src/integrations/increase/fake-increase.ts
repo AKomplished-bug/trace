@@ -121,6 +121,11 @@ export function createFakeIncrease({ timeoutMs = 10_000 }: { timeoutMs?: number 
       const transfer = fake.achTransfers.get(achRetrieve[1]);
       return transfer ? respond(200, transfer) : notFound();
     }
+    if (method === "GET" && url.pathname === "/ach_transfers") {
+      const key = url.searchParams.get("idempotency_key");
+      const data = [...fake.achTransfers.values()].filter((t) => key === null || t.idempotency_key === key);
+      return respond(200, { data, next_cursor: null });
+    }
     const achSimulation = /^\/simulations\/ach_transfers\/([^/]+)\/(submit|settle|return)$/.exec(url.pathname);
     if (method === "POST" && achSimulation) {
       const transfer = fake.achTransfers.get(achSimulation[1]);

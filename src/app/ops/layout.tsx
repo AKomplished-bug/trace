@@ -16,6 +16,7 @@ export default async function OpsLayout({ children }: { children: ReactNode }) {
               Overview
             </NavLink>
             <NavLink href="/ops/events">Events</NavLink>
+            <NavLink href="/ops/payments">Payments</NavLink>
           </>
         }
       />

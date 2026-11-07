@@ -763,9 +763,9 @@ release on exhaustion, which overstates available if the money went out; reconci
 `GET /ach_transfers?idempotency_key=` before giving up.
 
 **Tradeoff**
-A given-up payment reserves its funds until a webhook arrives or Ops resolves it with Increase.
-Sandbox webhooks aren't retried, so without the Events API backstop that can be a while. The Ops
-tools for it don't exist yet; the signals are the log line, `submit_gave_up_at` and the trace row.
+A given-up payment reserves its funds until a webhook arrives or Ops resolves it (see the Ops
+payment actions decision). Sandbox webhooks aren't retried, so without the Events API backstop that
+can be a while. The signals are the log line, `submit_gave_up_at`, the trace row and `/ops/payments`.
 
 ## 2026-11-07 — ACH webhooks: re-fetch the transfer, apply only the steps we haven't
 
@@ -897,6 +897,45 @@ already acted).
 
 **Tradeoff**
 To reprocess an ignored event after its type gains a handler, someone has to run a script.
+
+## 2026-11-07 — Ops resolves a given-up payment: requeue, or confirm not sent after asking Increase
+
+**Decision**
+Two OPS-only actions, listed on `/ops/payments`, for a payment that is `PENDING` with
+`submit_gave_up_at` set (anything else is 409 `payment_not_given_up` and changes nothing):
+- `POST /api/ops/payments/:id/requeue` clears `submit_gave_up_at`, sets `submit_attempts = 0` and
+  makes it due now, under account → payment locks, with a `payment.requeue` audit row. The submitter
+  then resends with the same `payment-<id>` key.
+- `POST /api/ops/payments/:id/confirm-not-sent` first asks Increase, with no transaction open and
+  the adapter's 10 s timeout, for a transfer under our key (`GET /ach_transfers?idempotency_key=`).
+  A transfer (or a stored `provider_object_id`) is 409 `transfer_exists`; no answer is 502
+  `provider_unavailable`; neither changes anything. Otherwise one transaction locks account →
+  payment, re-checks it is still given up **under the claim token seen before the call** (else 409
+  `payment_changed`), runs `failPayment` (HOLD_RELEASED, then STATUS_CHANGED → FAILED) and writes a
+  `payment.confirm_not_sent` audit row.
+
+Confirm-not-sent is refused (409 `too_soon`, Increase not asked) until `submit_gave_up_at` is 5
+minutes old (`CONFIRM_NOT_SENT_MIN_AGE_SECONDS`), so a create Increase is still processing or a
+list that hasn't caught up can't read as "no transfer"; `/ops/payments` greys the button until then.
+Both are counted as `ops_payment_actions_total{action,outcome}` and check Origin like login.
+Requeue writes no trace row: it moves no money and no status.
+
+**Why**
+Requeue is always safe because Increase returns the first transfer for a repeated key, so it is
+the default. Failing the payment releases money for spending, so it needs Increase's word that
+nothing went out, and that word must still apply when we write. A requeue, a claim or a fresh give-up
+in between bumps or clears what the transaction re-checks, so a stale "not found" can't fail a
+payment that has since been sent.
+
+**Alternatives**
+Let Ops fail it without asking Increase; a status for "Ops confirmed"; a trace row for requeue.
+
+**Tradeoff**
+A submitter call that is still in flight long after its lease (more than ~2 min, against a 10 s
+timeout) could create a transfer after Increase said none exists; its webhook would then be a
+permanent `PaymentTransferMismatchError` for Ops on a FAILED payment. The given-up list reads
+`status = 'PENDING' AND submit_gave_up_at IS NOT NULL` with no index of its own (like the backlog
+count); a partial index is the follow-up if PENDING grows.
 
 ## 2026-11-07 — Ops event viewer: metadata only, keyset by received time
 

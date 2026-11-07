@@ -272,6 +272,16 @@ describe("ACH transfers", () => {
     expect(fake.achTransfers.size).toBe(1);
   });
 
+  it("finds the transfer created with an idempotency key, or null when Increase has none", async () => {
+    const fake = createFakeIncrease();
+    const created = await fake.adapter.createTransfer(transferInput);
+    await fake.adapter.createTransfer({ ...transferInput, idempotencyKey: "payment-2" });
+    expect(await fake.adapter.findTransferByIdempotencyKey("payment-1")).toMatchObject({ id: created.id, idempotencyKey: "payment-1", requestId: expect.any(String) });
+    expect(await fake.adapter.findTransferByIdempotencyKey("payment-3")).toBeNull();
+    fake.next = "error";
+    await expect(fake.adapter.findTransferByIdempotencyKey("payment-1")).rejects.toThrow(PaymentProviderError);
+  });
+
   it("maps a reused key with a different body to IdempotencyKeyReusedError naming the existing transfer", async () => {
     const fake = createFakeIncrease();
     const created = await fake.adapter.createTransfer(transferInput);

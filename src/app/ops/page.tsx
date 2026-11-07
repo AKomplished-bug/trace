@@ -69,8 +69,13 @@ export default async function OpsHome() {
             </div>
           </dl>
           <p className="mt-3 text-xs text-neutral-500">
-            A given-up payment stays pending with its hold until a provider webhook says what happened.
+            A given-up payment stays pending with its hold until a provider webhook says what happened or Ops resolves it.
           </p>
+          <div className="mt-4 border-t border-neutral-100 pt-3">
+            <Link href="/ops/payments" className="text-sm text-neutral-600 hover:text-neutral-900">
+              Resolve given-up payments <span aria-hidden>→</span>
+            </Link>
+          </div>
         </div>
       </section>
 

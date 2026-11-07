@@ -147,7 +147,12 @@ authorization) moves no money, so it is a step on the purchase's trace, not a tr
   calls happen in the worker, after commit, using a persisted intent (outbox) and the same
   idempotency key on retries. Outbound payments: a `PENDING` `payments` row is the intent; the
   submitter claims it like an event (`submit_attempts`, `submit_claim_token`, lease in
-  `next_submit_at`) and calls Increase with `Idempotency-Key: payment-<payment id>`.
+  `next_submit_at`) and calls Increase with `Idempotency-Key: payment-<payment id>`. When the
+  outcome is unknown (budget spent, reused key) it gives up: still `PENDING` with its hold and
+  `submit_gave_up_at` set. Ops then requeues it (`POST /api/ops/payments/:id/requeue`: fresh
+  budget, same key) or confirms it not sent (`…/confirm-not-sent`: only 5 min after the give-up
+  and after Increase, asked outside any transaction, has no transfer under our key; then `failPayment` under the claim
+  token seen before the call). Both are audited and conditional on the given-up state.
 - Failures: exponential backoff (5 s doubling, capped at 15 min), terminal `FAILED` after 10
   attempts with a sanitized error stored (error class + our message; database errors as
   SQLSTATE and constraint name, never `detail` or values). Ops retry
@@ -201,7 +206,8 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
   Wired: `events_processed_total{provider,type,outcome}`, `webhooks_received_total{provider,outcome}`,
   `funding_requests_total{outcome}`, `funding_outcomes_total{outcome}`,
   `card_steps_total{kind,outcome}`, `payment_steps_total{kind,outcome}`, `payment_submissions_total{outcome}`,
-  `ops_event_retries_total{outcome}`, `replay_mismatch_total{scope}`.
+  `ops_event_retries_total{outcome}`, `ops_payment_actions_total{action,outcome}`,
+  `replay_mismatch_total{scope}`.
 - State is counted from the tables, not counters: events by status and the payment backlog
   (`given_up_payments` …). `GET /api/ops/metrics` (OPS, JSON) returns both; `/ops` shows them.
 
