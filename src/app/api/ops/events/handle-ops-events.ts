@@ -1,6 +1,6 @@
 import { getEventDetail, listEvents, retryEvent } from "../../../../services/ops-events";
 import { eventIdParams, eventListQuery, searchParamsObject } from "../../../_lib/schemas";
-import { invalidRequest, withRequestLog, type HandlerDeps } from "../../handler";
+import { checkSameOrigin, invalidRequest, withRequestLog, type HandlerDeps } from "../../handler";
 import { errorResponse } from "../../responses";
 import { requireOps } from "../../session";
 
@@ -45,6 +45,8 @@ export async function handleRetryEvent(deps: HandlerDeps, request: Request, para
     const ops = await requireOps(request);
     if (ops instanceof Response) return ops;
     annotate({ user_id: ops.userId });
+    const crossOrigin = checkSameOrigin(request);
+    if (crossOrigin) return crossOrigin;
     const parsed = eventIdParams.safeParse(params);
     if (!parsed.success) return invalidRequest(parsed.error);
     annotate({ event_id: parsed.data.id });

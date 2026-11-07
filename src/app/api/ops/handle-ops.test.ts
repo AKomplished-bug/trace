@@ -26,7 +26,8 @@ function signIn(role: "OWNER" | "OPS") {
   const token = signSession({ userId, role, accountId, expiresAt: Math.floor(Date.now() / 1000) + 600 }, sessionConfig().SESSION_SECRET);
   cookie = `${SESSION_COOKIE}=${token}`;
 }
-const request = (path: string, method = "GET") => new Request(`http://localhost${path}`, { method, headers: cookie ? { cookie } : {} });
+const request = (path: string, method = "GET", headers: Record<string, string> = {}) =>
+  new Request(`http://localhost${path}`, { method, headers: { ...headers, ...(cookie ? { cookie } : {}) } });
 
 async function json(response: Response | Promise<Response>) {
   const r = await response;
@@ -198,6 +199,16 @@ describe("POST /api/ops/events/:id/retry", () => {
     expect((await retry(processed)).body.error.code).toBe("event_not_retryable");
     expect((await retry(newId())).status).toBe(404);
     expect(await db.select().from(auditEvents)).toEqual([]);
+  });
+
+  it("403 from another origin, changing nothing; same origin or no Origin goes ahead", async () => {
+    const id = await insertEvent({ status: "FAILED" });
+    const from = (origin: string) => json(handleRetryEvent(deps, request(`/api/ops/events/${id}/retry`, "POST", { origin }), { id }));
+    expect(await from("https://evil.example")).toEqual({ status: 403, body: { error: { code: "cross_origin", message: "This request must come from the Trace app" } } });
+    expect((await from("null")).status).toBe(403);
+    const [row] = await db.select().from(externalEvents).where(eq(externalEvents.id, id));
+    expect(row.status).toBe("FAILED");
+    expect((await from("http://localhost")).status).toBe(200);
   });
 });
 

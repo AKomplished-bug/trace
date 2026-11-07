@@ -179,7 +179,8 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
 - REST under `/api`. Validate every input with zod at the route; errors as
   `{ error: { code, message } }`. Never return stack traces or internal errors.
 - Demo auth: signed session cookie; roles `OWNER` (scoped to one business) and `OPS`.
-  `/api/ops/**` requires `OPS`.
+  `/api/ops/**` requires `OPS`. Auth and Ops POSTs also refuse a cross-origin `Origin` with 403
+  (`checkSameOrigin` in `app/api/handler.ts`; in Ops handlers right after `requireOps`).
 - `external_events.payload` is never selected, returned or rendered (it can hold personal data);
   the Ops event viewer shows "payload withheld".
 - Ops actions write `audit_events` only through `recordAudit` (`services/audit.ts`), inside the
