@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { accounts, businesses, users } from "../db/schema";
 
@@ -36,12 +36,13 @@ export async function findSessionUser(db: Db, userId: string): Promise<SessionUs
   return user;
 }
 
-/** Demo login: everyone who can sign in to the sandbox. */
-export async function listUsers(db: Db): Promise<SessionUser[]> {
-  return db
-    .select(sessionUserColumns)
+/** Sign-in: the user with this (lower-case) email and their password hash, if there is one. */
+export async function findLoginUser(db: Db, email: string): Promise<(SessionUser & { passwordHash: string | null }) | undefined> {
+  const [user] = await db
+    .select({ ...sessionUserColumns, passwordHash: users.passwordHash })
     .from(users)
     .leftJoin(businesses, eq(businesses.id, users.businessId))
     .leftJoin(accounts, and(eq(accounts.businessId, users.businessId), eq(accounts.currency, "USD")))
-    .orderBy(asc(users.role), asc(users.name));
+    .where(eq(users.email, email));
+  return user;
 }

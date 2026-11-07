@@ -6,7 +6,8 @@ import { logger as rootLogger } from "../lib/logger";
 import { newId } from "../lib/ids";
 import { INCREASE_PROVIDER } from "../integrations/increase";
 import { STRIPE_PROVIDER } from "../integrations/stripe";
-import { flushCounters, startCounterFlush } from "../services/metrics";
+import { pruneLoginThrottles } from "../services/login-throttle";
+import { countOutcome, flushCounters, startCounterFlush } from "../services/metrics";
 import { outboxBacklog } from "../services/payments";
 import { claimNextRun, executeRun, type ReconciliationSources } from "../services/reconciliation";
 import { claimNextEvent, processEvent } from "./events";
@@ -23,6 +24,9 @@ const IDLE_POLL_MS = 1_000;
 const ERROR_PAUSE_MS = 5_000;
 // How often the reconciliation loop looks for a due run when there is none.
 const RUN_POLL_MS = 5_000;
+// How often stale login throttle rows are deleted, and how many per statement.
+const PRUNE_EVERY_MS = 10 * 60_000;
+const PRUNE_BATCH = 1_000;
 // How often the worker logs the payment outbox backlog (alert on the oldest unsubmitted payment).
 const BACKLOG_LOG_MS = 60_000;
 
@@ -73,9 +77,28 @@ async function reconciliationLoop(): Promise<void> {
   }
 }
 
+/** Deletes stale login throttle rows every 10 minutes, in batches, off the event path. */
+async function pruneLoop(): Promise<void> {
+  while (!shutdown.signal.aborted) {
+    try {
+      let deleted: number;
+      do {
+        deleted = await pruneLoginThrottles(db, PRUNE_BATCH);
+        if (deleted > 0) countOutcome("login_throttle_rows_pruned_total", {}, deleted);
+      } while (deleted === PRUNE_BATCH && !shutdown.signal.aborted);
+      countOutcome("login_throttle_prunes_total", { outcome: "ok" });
+    } catch (error) {
+      log.error({ err: safeErrorForLog(error) }, "login throttle prune failed");
+      countOutcome("login_throttle_prunes_total", { outcome: "error" });
+    }
+    await pause(PRUNE_EVERY_MS);
+  }
+}
+
 log.info({ lease_seconds: LEASE_SECONDS }, "worker started");
 startCounterFlush(db, log, shutdown.signal);
 const reconciling = reconciliationLoop();
+const pruning = pruneLoop();
 let backlogLoggedAt = 0;
 while (!shutdown.signal.aborted) {
   try {
@@ -96,6 +119,7 @@ while (!shutdown.signal.aborted) {
 }
 // Let a reconciliation run in progress finish before closing the pool.
 await reconciling;
+await pruning;
 await flushCounters(db, log);
 await pool.end();
 log.info("worker stopped");
