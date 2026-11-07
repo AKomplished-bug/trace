@@ -150,8 +150,11 @@ authorization) moves no money, so it is a step on the purchase's trace, not a tr
   `next_submit_at`) and calls Increase with `Idempotency-Key: payment-<payment id>`.
 - Failures: exponential backoff (5 s doubling, capped at 15 min), terminal `FAILED` after 10
   attempts with a sanitized error stored (error class + our message; database errors as
-  SQLSTATE and constraint name, never `detail` or values). Ops retry resets `attempts` and bumps
-  `claim_token`; retries are safe because of the rules above.
+  SQLSTATE and constraint name, never `detail` or values). Ops retry
+  (`POST /api/ops/events/:id/retry`) works only from `FAILED`: under the event row lock it sets
+  `RETRY`, resets `attempts`, bumps `claim_token`, makes it due now and writes an audit event, all
+  in one transaction; a second or concurrent retry is a 409. Retries are safe because of the rules
+  above.
 - Out-of-order (e.g. settlement before authorization): retry with backoff; if it never
   resolves, it surfaces as an Ops exception — never silently dropped.
 
@@ -177,14 +180,29 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
   `{ error: { code, message } }`. Never return stack traces or internal errors.
 - Demo auth: signed session cookie; roles `OWNER` (scoped to one business) and `OPS`.
   `/api/ops/**` requires `OPS`.
+- `external_events.payload` is never selected, returned or rendered (it can hold personal data);
+  the Ops event viewer shows "payload withheld".
+- Ops actions write `audit_events` only through `recordAudit` (`services/audit.ts`), inside the
+  action's own transaction, with the request's `correlationId` (from `withRequestLog`). Previous
+  and new state are flat scalars (ids, statuses, counts), never payloads.
 
 ## Observability
 
 - `pino` structured JSON logs. Every request/job carries `correlation_id`; log `event_id`,
   `transaction_id`, `account_id` on every external call and state change.
 - Never log secrets, headers, raw card data or personal data.
-- Counter per outcome for each workflow step (`events_processed_total{type,outcome}`,
-  `reconciliation_results_total{status}` …), exposed at `/api/ops/metrics`.
+- Counter per outcome for each workflow step, through `countOutcome(name, labels)`
+  (`services/metrics.ts`) only. It buffers in process (no I/O, never throws); each process
+  (`apiDeps()` in web, the worker loop) flushes every 5 s to `metric_counters` with
+  `INSERT … ON CONFLICT DO UPDATE value = value + n`, outside business transactions, and keeps the
+  counts on a failed flush. Counts made inside the worker's processing transaction are kept only
+  if it commits (`countAfterCommit`). Label values come from fixed sets, never ids or raw input.
+  Wired: `events_processed_total{provider,type,outcome}`, `webhooks_received_total{provider,outcome}`,
+  `funding_requests_total{outcome}`, `funding_outcomes_total{outcome}`,
+  `card_steps_total{kind,outcome}`, `payment_submissions_total{outcome}`,
+  `ops_event_retries_total{outcome}`, `replay_mismatch_total{scope}`.
+- State is counted from the tables, not counters: events by status and the payment backlog
+  (`given_up_payments` …). `GET /api/ops/metrics` (OPS, JSON) returns both; `/ops` shows them.
 
 ## Testing
 
