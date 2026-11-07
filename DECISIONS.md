@@ -1293,3 +1293,26 @@ the app assembling the URL (code change).
 Tasks read secrets only at start, so a new value needs a forced redeployment. Placeholders stand in
 for the Stripe webhook secret and the Increase keys until those exist: the app needs them to boot,
 and until they're real, webhooks from that provider fail verification (400) and Increase calls fail.
+
+## 2026-11-07 — Provider errors are checked by name, not instanceof
+
+**Decision**
+Route handlers recognise provider errors with `isWebhookVerificationError`, `isProviderRejectedError`
+and `isPaymentProviderError` (`integrations/payment-provider.ts`), which compare `error.name`, never
+`instanceof`.
+
+**Why**
+`apiDeps()` caches one set of adapters on `globalThis` for the process, but `next build` gives pages
+and route handlers separate copies of the modules they import. After a page (e.g. `/login`) created
+the adapters, every bad webhook signature was a 500 instead of a 400 in production, and Increase
+refusals and timeouts in the simulation endpoints would be 500s instead of 422/502. `next dev` and
+the tests share one copy, so neither showed it.
+
+**Alternatives**
+A brand with `Symbol.for` (survives copies too, more machinery); one adapter set per bundle (a
+database pool per bundle, against the one-pool rule).
+
+**Tradeoff**
+The names are string literals kept in step with the classes by hand; a new subclass of
+`ProviderRejectedError` must be added to `REJECTED_NAMES`. Errors thrown by services are still
+checked with `instanceof`: a route imports those itself, so they come from its own copy.

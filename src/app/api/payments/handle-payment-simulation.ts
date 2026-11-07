@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Db } from "../../../db/client";
-import { PaymentProviderError, ProviderRejectedError } from "../../../integrations/payment-provider";
+import { isPaymentProviderError, isProviderRejectedError } from "../../../integrations/payment-provider";
 import type { TransferProvider } from "../../../integrations/transfer-provider";
 import type { Logger } from "../../../lib/logger";
 import {
@@ -80,10 +80,10 @@ export async function handlePaymentSimulation(
       if (error instanceof PaymentNotSubmittedError) {
         return errorResponse(409, "payment_not_submitted", "This payment hasn't been sent to Increase yet; the worker submits it shortly");
       }
-      if (error instanceof ProviderRejectedError) {
+      if (isProviderRejectedError(error)) {
         return errorResponse(422, "provider_rejected", "Increase refused this step for the transfer's current state; nothing changed");
       }
-      if (error instanceof PaymentProviderError) {
+      if (isPaymentProviderError(error)) {
         return errorResponse(
           502,
           "provider_unavailable",
