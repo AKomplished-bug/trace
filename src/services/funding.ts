@@ -10,6 +10,7 @@ import { PermanentEventError, safeErrorForLog, safeErrorMessage } from "../lib/e
 import type { Logger } from "../lib/logger";
 import { lockAccount } from "./accounts";
 import { postLedgerEntry } from "./ledger";
+import { countOutcome } from "./metrics";
 import { appendTraceEvent } from "./trace";
 
 export type Transaction = typeof transactions.$inferSelect;
@@ -131,7 +132,10 @@ export async function createFunding(
 
   const log = logger.child({ account_id: transaction.accountId, transaction_id: transaction.id, provider: provider.name });
   log.info({ outcome: replayed ? "replayed" : "created", amount_cents: transaction.amountCents }, "funding transaction ready");
-  if (transaction.providerObjectId) return { transaction, replayed };
+  if (transaction.providerObjectId) {
+    countOutcome("funding_requests_total", { outcome: "replayed" });
+    return { transaction, replayed };
+  }
 
   let payment: ProviderPayment;
   try {
@@ -142,9 +146,11 @@ export async function createFunding(
     });
   } catch (error) {
     const requestId = error instanceof Error && "requestId" in error ? error.requestId : undefined;
+    countOutcome("funding_requests_total", { outcome: "provider_error" });
     log.error({ outcome: "provider_error", err: safeErrorForLog(error), provider_request_id: requestId }, "funding provider call failed; transaction stays PENDING");
     throw new FundingProviderError(transaction.id, safeErrorMessage(error));
   }
+  countOutcome("funding_requests_total", { outcome: payment.status === "FAILED" ? "provider_declined" : "provider_created" });
   log.info(
     {
       outcome: payment.status === "FAILED" ? "provider_declined" : "provider_created",
@@ -215,6 +221,7 @@ export async function applyFundingOutcome(
 
   if (event === "FUNDING_FAILED" && payment.status === "SUCCEEDED") {
     // A later attempt succeeded; its payment_intent.succeeded event settles the transaction.
+    countOutcome("funding_outcomes_total", { outcome: "superseded" });
     txLog.info({ outcome: "superseded" }, "funding failure superseded by a later success; no effect");
     return;
   }
@@ -225,6 +232,7 @@ export async function applyFundingOutcome(
 
   const to = fundingOutcomeStatus(event);
   if (transaction.status === to) {
+    countOutcome("funding_outcomes_total", { outcome: "duplicate" });
     txLog.info({ outcome: "duplicate" }, "funding outcome already applied; no effect");
     await linkEvent(tx, input.eventId, transaction.id);
     return;
@@ -278,6 +286,7 @@ export async function applyFundingOutcome(
     providerRef,
   });
   await linkEvent(tx, input.eventId, transaction.id);
+  countOutcome("funding_outcomes_total", { outcome: next === "SETTLED" ? "settled" : "failed" });
   txLog.info({ outcome: next === "SETTLED" ? "settled" : "failed", from_status: transaction.status, to_status: next }, "funding outcome applied");
 }
 

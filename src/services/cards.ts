@@ -9,6 +9,7 @@ import type { Logger } from "../lib/logger";
 import { lockAccount } from "./accounts";
 import { transitionHold } from "./holds";
 import { postLedgerEntry } from "./ledger";
+import { countOutcome } from "./metrics";
 import { appendTraceEvent } from "./trace";
 
 type Transaction = typeof transactions.$inferSelect;
@@ -126,6 +127,7 @@ export async function applyCardPayment(tx: Tx, input: CardPaymentInput, logger: 
         const event = element.kind === "REVERSAL" ? "VOID" : "EXPIRE";
         const to = nextCardPurchaseStatus(purchase.status, event);
         if (!to) {
+          countOutcome("card_steps_total", { kind: element.kind, outcome: "no_effect" });
           elementLog.info({ outcome: "no_effect", status: purchase.status }, "authorization already closed; nothing to release");
           continue;
         }
@@ -138,6 +140,7 @@ export async function applyCardPayment(tx: Tx, input: CardPaymentInput, logger: 
     }
     applied.add(element.id);
     appliedCount += 1;
+    countOutcome("card_steps_total", { kind: element.kind, outcome: "applied" });
     elementLog.info({ outcome: "applied", transaction_id: purchase?.id, status: purchase?.status }, "card payment step applied");
   }
 

@@ -4,6 +4,7 @@ import { config } from "../lib/config";
 import { safeErrorForLog } from "../lib/errors";
 import { logger as rootLogger } from "../lib/logger";
 import { newId } from "../lib/ids";
+import { flushCounters, startCounterFlush } from "../services/metrics";
 import { outboxBacklog } from "../services/payments";
 import { claimNextEvent, processEvent } from "./events";
 import { routing } from "./handlers";
@@ -43,6 +44,7 @@ async function logBacklog(): Promise<void> {
 }
 
 log.info({ lease_seconds: LEASE_SECONDS }, "worker started");
+startCounterFlush(db, log, shutdown.signal);
 let backlogLoggedAt = 0;
 while (!shutdown.signal.aborted) {
   try {
@@ -61,5 +63,6 @@ while (!shutdown.signal.aborted) {
     await pause(ERROR_PAUSE_MS);
   }
 }
+await flushCounters(db, log);
 await pool.end();
 log.info("worker stopped");
