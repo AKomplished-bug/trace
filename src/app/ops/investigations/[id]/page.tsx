@@ -1,3 +1,4 @@
+import { ChevronLeft } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
@@ -33,8 +34,8 @@ const LIKELY_CAUSES: Record<ReconciliationStatus, string[]> = {
 
 function Panel({ title, children, aside }: { title: string; children: ReactNode; aside?: ReactNode }) {
   return (
-    <section className="rounded-md border border-neutral-200 bg-white">
-      <div className="flex items-baseline justify-between border-b border-neutral-100 px-4 py-2.5">
+    <section className="rounded-xl border border-border bg-card">
+      <div className="flex items-baseline justify-between border-b border-border px-4 py-2.5">
         <h2 className="text-sm font-semibold">{title}</h2>
         {aside}
       </div>
@@ -44,7 +45,7 @@ function Panel({ title, children, aside }: { title: string; children: ReactNode;
 }
 
 function Id({ value }: { value: string | null }) {
-  return value ? <code className="break-all font-mono text-xs text-neutral-700">{value}</code> : <span className="text-xs text-neutral-400">—</span>;
+  return value ? <code className="break-all font-mono text-xs text-foreground">{value}</code> : <span className="text-xs text-muted-foreground">—</span>;
 }
 
 function stateText(state: unknown): string {
@@ -77,51 +78,52 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
 
   return (
     <div className="space-y-5">
-      <Link href="/ops/investigations" className="text-sm text-neutral-600 hover:text-neutral-900">
-        ← Investigations
+      <Link href="/ops/investigations" className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline">
+        <ChevronLeft aria-hidden className="size-4" />
+        Investigations
       </Link>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Investigation · {inv.businessName ?? "no business"}</p>
-          <h1 className="mt-1 flex flex-wrap items-center gap-2 text-lg font-semibold tracking-tight">
+          <p className="text-xs font-medium text-muted-foreground">Investigation · {inv.businessName ?? "no business"}</p>
+          <h1 className="mt-1 flex flex-wrap items-center gap-2 text-xl font-semibold tracking-tight">
             {TYPE_LABELS[record.transactionType]} <ReconciliationStatusBadge status={record.status} />
           </h1>
-          <p className="mt-1 text-xs text-neutral-500">
+          <p className="mt-1 text-xs text-muted-foreground">
             Opened <LocalTime value={inv.createdAt} /> · <Id value={inv.id} />
           </p>
         </div>
-        {open ? <Tag tone="amber">open</Tag> : <Tag tone="emerald">resolved</Tag>}
+        {open ? <Tag tone="amber">Open</Tag> : <Tag tone="emerald">Resolved</Tag>}
       </header>
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <div className="space-y-5">
-          <Panel title="Discrepancy" aside={<Link href={`/ops/reconciliation/${record.runId}#record-${record.id}`} className="text-xs text-neutral-600 hover:text-neutral-900">Reconciliation run →</Link>}>
+          <Panel title="Discrepancy" aside={<Link href={`/ops/reconciliation/${record.runId}#record-${record.id}`} className="text-xs text-muted-foreground hover:text-foreground">View in reconciliation run</Link>}>
             <dl className="grid grid-cols-[max-content_minmax(0,1fr)_minmax(0,1fr)] gap-x-6 gap-y-1.5 text-sm">
               <dt />
-              <dd className="text-xs font-medium uppercase tracking-wide text-neutral-500">Trace</dd>
-              <dd className="text-xs font-medium uppercase tracking-wide text-neutral-500">{providerLabel(record.provider)}</dd>
-              <dt className="text-neutral-500">Amount</dt>
+              <dd className="text-xs font-medium text-muted-foreground">Trace</dd>
+              <dd className="text-xs font-medium text-muted-foreground">{providerLabel(record.provider)}</dd>
+              <dt className="text-muted-foreground">Amount</dt>
               <dd>{record.internalAmountCents === null ? "—" : <Money cents={record.internalAmountCents} />}</dd>
               <dd>{record.externalAmountCents === null ? "—" : <Money cents={record.externalAmountCents} />}</dd>
-              <dt className="text-neutral-500">Status</dt>
+              <dt className="text-muted-foreground">Status</dt>
               <dd className="font-mono text-xs">{record.internalStatus ?? "—"}</dd>
               <dd className="font-mono text-xs">{record.externalStatus ?? "—"}</dd>
-              <dt className="text-neutral-500">Id</dt>
+              <dt className="text-muted-foreground">Id</dt>
               <dd><Id value={record.transactionId} /></dd>
               <dd><Id value={record.externalId} /></dd>
-              <dt className="text-neutral-500">Element</dt>
+              <dt className="text-muted-foreground">Element</dt>
               <dd />
               <dd><Id value={record.externalRef} /></dd>
             </dl>
             {record.differenceCents ? (
-              <p className="mt-3 border-t border-neutral-100 pt-3 text-sm">
-                Difference (provider − Trace): <Money cents={record.differenceCents} signed className="font-medium" />
+              <p className="mt-3 border-t border-border pt-3 text-sm">
+                Difference (provider − Trace): <Money cents={record.differenceCents} signed className="font-medium text-foreground" />
               </p>
             ) : null}
             {LIKELY_CAUSES[record.status].length > 0 && (
-              <div className="mt-3 border-t border-neutral-100 pt-3">
-                <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Likely causes</p>
-                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-neutral-700">
+              <div className="mt-3 border-t border-border pt-3">
+                <p className="text-xs font-medium text-muted-foreground">Likely causes</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-foreground">
                   {LIKELY_CAUSES[record.status].map((cause) => (
                     <li key={cause}>{cause}</li>
                   ))}
@@ -137,7 +139,7 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
                 trace.replay.consistent ? (
                   <Tag tone="emerald">Replay matches recorded balances</Tag>
                 ) : (
-                  <span className="rounded bg-red-50 px-1.5 py-0.5 text-xs font-medium text-red-800 ring-1 ring-inset ring-red-200">
+                  <span className="rounded bg-danger-soft px-1.5 py-0.5 text-xs font-medium text-danger ring-1 ring-inset ring-danger-line/70">
                     Replay mismatch at step {trace.replay.divergence ? trace.replay.divergence.stepIndex + 1 : "?"}
                   </span>
                 )
@@ -145,7 +147,7 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
             }
           >
             {!trace ? (
-              <p className="text-sm text-neutral-600">There is no Trace transaction for this record.</p>
+              <p className="text-sm text-muted-foreground">There is no Trace transaction for this record.</p>
             ) : (
               <>
                 <p className="mb-3 flex flex-wrap items-center gap-2 text-sm">
@@ -156,15 +158,15 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
                     const { title, detail: more } = describeStep(step, trace.transaction.type);
                     const amount = stepAmount(step);
                     return (
-                      <li key={step.id} className="rounded border border-neutral-100 px-3 py-2 text-sm">
+                      <li key={step.id} className="rounded border border-border px-3 py-2 text-sm">
                         <div className="flex flex-wrap items-baseline justify-between gap-2">
                           <span>
-                            <span className="font-mono text-xs text-neutral-500">#{step.seq}</span> {title}
+                            <span className="font-mono text-xs text-muted-foreground">#{step.seq}</span> {title}
                           </span>
                           {amount && <Money cents={amount.cents} signed={amount.signed} />}
                         </div>
-                        {more && <p className="text-xs text-neutral-600">{more}</p>}
-                        <p className="mt-1 text-xs text-neutral-500">
+                        {more && <p className="text-xs text-muted-foreground">{more}</p>}
+                        <p className="mt-1 text-xs text-muted-foreground">
                           Ledger after <Money cents={step.ledgerBalanceAfterCents} /> · available after <Money cents={step.availableAfterCents} />
                           {step.providerRef && (
                             <>
@@ -192,7 +194,7 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
 
           {trace && (
             <Panel title="Ledger entries and linked transactions">
-              <ul className="divide-y divide-neutral-100 text-sm">
+              <ul className="divide-y divide-border text-sm">
                 {trace.ledgerEntries.map((entry) => (
                   <li key={entry.id} className="flex items-baseline justify-between gap-3 py-1.5">
                     <span>{ENTRY_LABELS[entry.entryType]}</span>
@@ -202,8 +204,8 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
                 {trace.related.map((r) => (
                   <li key={r.id} className="flex items-baseline justify-between gap-3 py-1.5">
                     <span>
-                      {TYPE_LABELS[r.type]} <span className="text-xs text-neutral-500">{r.relation === "original" ? "original" : "follow-up"}</span>
-                      <span className="block font-mono text-xs text-neutral-500">{r.id}</span>
+                      {TYPE_LABELS[r.type]} <span className="text-xs text-muted-foreground">{r.relation === "original" ? "original" : "follow-up"}</span>
+                      <span className="block font-mono text-xs text-muted-foreground">{r.id}</span>
                     </span>
                     {r.postedCents === null ? <Money cents={r.amountCents} /> : <Money cents={r.postedCents} signed />}
                   </li>
@@ -219,11 +221,11 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
               <ResolveForm investigationId={inv.id} canAdjust={canAdjust && suggestedCents !== null} suggestedCents={suggestedCents} />
             ) : (
               <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
-                <dt className="text-neutral-500">Resolved</dt>
+                <dt className="text-muted-foreground">Resolved</dt>
                 <dd>{inv.resolvedAt ? <LocalTime value={inv.resolvedAt} /> : "—"}</dd>
-                <dt className="text-neutral-500">By</dt>
+                <dt className="text-muted-foreground">By</dt>
                 <dd><Id value={inv.resolvedBy} /></dd>
-                <dt className="text-neutral-500">Adjustment</dt>
+                <dt className="text-muted-foreground">Adjustment</dt>
                 <dd>
                   {adjustment ? (
                     <>
@@ -241,9 +243,9 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
             {notes.length > 0 && (
               <ol className="mb-3 space-y-2">
                 {notes.map((n) => (
-                  <li key={n.id} className="rounded bg-neutral-50 px-3 py-2 text-sm">
+                  <li key={n.id} className="rounded bg-muted/50 px-3 py-2 text-sm">
                     <p className="whitespace-pre-wrap break-words">{n.body}</p>
-                    <p className="mt-1 text-xs text-neutral-500">
+                    <p className="mt-1 text-xs text-muted-foreground">
                       <code className="font-mono">{n.authorId.slice(0, 8)}</code> · <LocalTime value={n.createdAt} />
                     </p>
                   </li>
@@ -255,16 +257,16 @@ export default async function InvestigationPage({ params }: { params: Promise<{ 
 
           <Panel title="Audit trail">
             {audit.length === 0 ? (
-              <p className="text-sm text-neutral-600">None.</p>
+              <p className="text-sm text-muted-foreground">None.</p>
             ) : (
               <ol className="space-y-2 text-sm">
                 {audit.map((a) => (
                   <li key={a.id}>
                     <span className="font-mono text-xs font-medium">{a.action}</span>{" "}
-                    <span className="text-xs text-neutral-500">
+                    <span className="text-xs text-muted-foreground">
                       by <code className="font-mono">{a.actorId ?? "system"}</code> · <LocalTime value={a.createdAt} />
                     </span>
-                    <span className="block break-words font-mono text-xs text-neutral-600">
+                    <span className="block break-words font-mono text-xs text-muted-foreground">
                       {stateText(a.previousState)} → {stateText(a.newState)}
                     </span>
                   </li>
