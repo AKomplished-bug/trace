@@ -136,6 +136,39 @@ creates a linked `PAYMENT_RETURN` crediting $100 back, and the payment stays `CO
 **Payments** page (`/payments`) has the same send form and the lifecycle of each payment. Every
 payment opens its money trace.
 
+### Reconciliation and investigations (the core demo mismatch)
+
+Reconciliation compares our transactions with the records each provider's API lists for a time
+window. Locally, without provider keys, reproduce the demo story's mismatch against the provider
+fakes: Stripe agrees with the $500 funding, Increase reports the $65 settlement as **$80**.
+
+```sh
+npm run demo:reconcile   # dev only: seed + demo story, then one reconciliation run of provider "demo" in this process
+```
+
+It logs the run id; the run has `MATCHED` (funding) and `AMOUNT_MISMATCH` (card purchase, $65 vs
+$80). Then, signed in as the Ops user (`00000000-0000-4000-8000-000000000012`, from `/login`):
+
+1. **Reconciliation** (`/ops/reconciliation`) lists the exception: Acme Inc., internal $65,
+   external $80, difference +$15. **Open investigation** opens its case.
+2. The investigation page shows both sides, likely causes, the purchase's money trace with the
+   replay check, the notes timeline and the audit trail. Add a note.
+3. **Resolve** with a note and the suggested adjustment (−1500 cents). This posts a new
+   `ADJUSTMENT` transaction (−$15, linked to the purchase) through the ledger; nothing is edited.
+   Only an amount mismatch on a posted transaction can be adjusted, and only by the amount that
+   closes the gap; other exceptions resolve with a note.
+   Submitting twice posts once. The owner's purchase page lists the adjustment under **Linked
+   transactions**, and the balance goes from $435 to $420.
+4. `npm run demo:reconcile` again: the purchase now matches ($65 + $15 adjustment = $80).
+
+Against the real sandboxes, keep `npm run worker` running and use **Reconcile Stripe** /
+**Reconcile Increase** on `/ops/reconciliation` (or `POST /api/ops/reconciliation/run
+{"provider":"increase"}`; optional `windowStart`/`windowEnd`, default the last 7 days). Increase
+runs cover the card and account linked by `npm run increase:bootstrap`; Stripe runs only our
+PaymentIntents (with our `transaction_id` metadata). One run per provider is active at a time; a
+repeat request returns it. A failed run (e.g. the provider
+timed out) shows its error and a **Retry run** button.
+
 ## Check
 
 ```sh
