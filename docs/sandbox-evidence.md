@@ -144,8 +144,8 @@ doesn't:
 - `pi_3UZ8SsGvZ0hDBaj2014vQKXZ`, created 12:11 UTC.
 
 Both were created by local dev runs:
-- The local runs used the same Stripe test account and the same seeded account id, so their
-  `metadata.account_id` names this account.
+- The local runs used the same Stripe test account, and their PaymentIntents carry our
+  `transaction_id` metadata, so this deployment treats them as ours.
 - Their transactions exist only in the local databases.
 
 Reconciliation caught this correctly: Stripe holds money our books never had.
@@ -181,9 +181,9 @@ records both the open and the resolve actions.
 - **The app is hosted in Sydney** (AWS ap-southeast-2, behind CloudFront). From the UK, each
   request adds about 270 ms of round trip. The slower simulation routes, around 0.4 to 2.4 s
   server side, are mostly waiting on Increase.
-- **One Stripe test account is shared with local dev.** Local runs use the same seeded ids, so
-  their events reach this deployment, and their PaymentIntents show up in its reconciliation (see
-  above).
+- **One Stripe test account is shared with local dev.** The Stripe webhook endpoint receives
+  every event in the shared test account, so local runs' PaymentIntents reach this deployment and
+  its reconciliation (see above).
 - **Screenshots** were taken in UTC, logged in from saved session cookies, with no password on
   screen.
 
