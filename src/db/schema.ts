@@ -91,6 +91,8 @@ export const users = pgTable(
     email: text("email").notNull().unique(),
     name: text("name").notNull(),
     role: userRole("role").notNull(),
+    // `scrypt$N$r$p$salt$hash` (lib/password.ts); null = can't sign in.
+    passwordHash: text("password_hash"),
     createdAt: createdAt(),
   },
   (t) => [check("users_owner_has_business", sql`${t.role} = 'OPS' OR ${t.businessId} IS NOT NULL`)],
@@ -511,4 +513,21 @@ export const metricCounters = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [primaryKey({ columns: [t.name, t.labels] })],
+);
+
+/**
+ * Login throttling, shared by every web instance. One row per throttled key: an HMAC of the login
+ * email or of the client IP (`scope`), never the value itself. Each attempt is counted before the
+ * password is checked (services/login-throttle.ts).
+ */
+export const loginThrottles = pgTable(
+  "login_throttles",
+  {
+    scope: text("scope").notNull(),
+    keyHash: text("key_hash").notNull(),
+    attempts: integer("attempts").notNull(),
+    windowStartedAt: timestamptz("window_started_at").notNull(),
+    lockedUntil: timestamptz("locked_until"),
+  },
+  (t) => [primaryKey({ columns: [t.scope, t.keyHash] }), check("login_throttles_scope", sql`${t.scope} IN ('email', 'ip')`)],
 );
