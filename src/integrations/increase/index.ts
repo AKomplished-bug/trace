@@ -64,14 +64,15 @@ export interface IncreaseAdapterOptions {
 }
 
 const eventSchema = z.object({ id: z.string().min(1), category: z.string().min(1) });
+// An anonymous sandbox (POST /groups) prefixes every id with `sandbox_`.
 const cardPaymentEventSchema = z.object({
   associated_object_type: z.literal("card_payment"),
-  associated_object_id: z.string().startsWith("card_payment_"),
+  associated_object_id: z.string().regex(/^(sandbox_)?card_payment_/),
 });
 
 const achTransferEventSchema = z.object({
   associated_object_type: z.literal("ach_transfer"),
-  associated_object_id: z.string().startsWith("ach_transfer_"),
+  associated_object_id: z.string().regex(/^(sandbox_)?ach_transfer_/),
 });
 
 /** The transfer id a stored `ach_transfer.*` event points at (thin webhook: re-fetch it). */

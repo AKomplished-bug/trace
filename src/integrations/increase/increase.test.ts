@@ -139,6 +139,8 @@ describe("mapping fixtures", () => {
   it("reads the card payment id from card_payment events only", () => {
     expect(cardPaymentIdFromEvent(createdEvent)).toBe("card_payment_nd3k2kacrqjli8482ave");
     expect(() => cardPaymentIdFromEvent(pendingCreated)).toThrow();
+    // Anonymous sandboxes prefix ids with sandbox_.
+    expect(cardPaymentIdFromEvent({ ...createdEvent, associated_object_id: "sandbox_card_payment_x" })).toBe("sandbox_card_payment_x");
   });
 });
 
@@ -256,6 +258,7 @@ describe("ACH transfers", () => {
   it("reads the transfer id from ach_transfer events only", () => {
     expect(achTransferIdFromEvent(achCreatedEvent)).toBe(achCreatedEvent.associated_object_id);
     expect(() => achTransferIdFromEvent(createdEvent)).toThrow();
+    expect(achTransferIdFromEvent({ ...achCreatedEvent, associated_object_id: "sandbox_ach_transfer_x" })).toBe("sandbox_ach_transfer_x");
   });
 
   it("creates a transfer with our Idempotency-Key; the same key and body returns the same transfer", async () => {
