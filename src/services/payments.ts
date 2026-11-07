@@ -11,6 +11,7 @@ import { accountAvailableCents, lockAccount } from "./accounts";
 import { IdempotencyConflictError, requestHash } from "./funding";
 import { transitionHold } from "./holds";
 import { postLedgerEntry } from "./ledger";
+import { countOutcome } from "./metrics";
 import { appendTraceEvent } from "./trace";
 
 export type Payment = typeof payments.$inferSelect;
@@ -361,6 +362,7 @@ export async function applyAchTransfer(tx: Tx, input: AchTransferInput, logger: 
     } else {
       payment = await failPayment(tx, payment, { ...step, error: `provider ${transfer.status} the transfer` });
     }
+    countOutcome("payment_steps_total", { kind: action.kind, outcome: "applied" });
     txLog.info({ outcome: "applied", step: action.kind, status: payment.status, reason: "reason" in action ? action.reason : undefined }, "payment step applied");
   }
 

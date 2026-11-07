@@ -10,6 +10,7 @@ import { achTransferEvent, createFakeIncrease, signedIncreaseWebhook, type FakeI
 import { logger } from "../lib/logger";
 import { accountAvailableCents, lockAccount } from "../services/accounts";
 import { postLedgerEntry } from "../services/ledger";
+import { flushCounters, readCounters } from "../services/metrics";
 import { createPayment, paymentIdempotencyKey, type Payment } from "../services/payments";
 import { claimNextEvent, processEvent, type ProcessOutcome } from "./events";
 import { handlerKey, type EventRouting } from "./handlers";
@@ -86,6 +87,7 @@ const steps = async (transactionId: string) =>
   (await trace(transactionId)).map((t) => [t.kind, t.fromStatus, t.toStatus, t.ledgerDeltaCents, t.ledgerBalanceAfterCents, t.availableAfterCents]);
 
 beforeEach(async () => {
+  await flushCounters(db, logger); // drop what earlier tests buffered
   await resetDb(db);
   await db.update(accounts).set({ providerId: PROVIDER_ACCOUNT_ID }).where(eq(accounts.id, SEED.accountId));
   fake = createFakeIncrease();
@@ -122,6 +124,11 @@ describe("outbound payment lifecycle through Increase webhooks and the worker", 
     expect((await trace(payment.transactionId)).slice(2).every((t) => t.providerRef === transferId)).toBe(true);
     const [stored] = await db.select().from(externalEvents).where(eq(externalEvents.externalEventId, event.id));
     expect(stored).toMatchObject({ status: "PROCESSED", transactionId: payment.transactionId });
+    await flushCounters(db, logger);
+    expect((await readCounters(db)).filter((c) => c.name === "payment_steps_total")).toEqual([
+      { name: "payment_steps_total", labels: { kind: "COMPLETE", outcome: "applied" }, value: 1 },
+      { name: "payment_steps_total", labels: { kind: "NETWORK_SUBMITTED", outcome: "applied" }, value: 1 },
+    ]);
   });
 
   it("a return before settlement: RETURNED, hold released, back to 500/500, no ledger entry", async () => {
