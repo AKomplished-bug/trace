@@ -323,7 +323,11 @@ export default async function TransactionPage({ params }: { params: Promise<{ id
                       <span>
                         {TYPE_LABELS[r.type]}
                         <span className="block text-xs text-neutral-500">
-                          {r.relation === "original" ? "The original this one reverses" : "Follows up on this transaction"}
+                          {r.relation === "follow_up"
+                            ? "Follows up on this transaction"
+                            : t.type === "ADJUSTMENT"
+                              ? "The transaction this adjusts"
+                              : "The original this one reverses"}
                         </span>
                       </span>
                       <TransactionAmount t={r} />

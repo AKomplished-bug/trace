@@ -101,6 +101,12 @@ function describeStatusChange(step: TimelineStep, type: TransactionType): { titl
   if (type === "CARD_REVERSAL" && step.toStatus === "SETTLED") {
     return { title: "Refund received", detail: "The merchant sent money back for this purchase." };
   }
+  if (type === "ADJUSTMENT" && step.toStatus === "SETTLED") {
+    return {
+      title: "Correction posted after review",
+      detail: "Our team checked this against the provider's records and posted a correction. The original transaction is unchanged.",
+    };
+  }
   const from = step.fromStatus ? `${statusLabel(step.fromStatus)} → ` : "";
   return { title: `Status: ${from}${statusLabel(step.toStatus)}`, detail: "" };
 }

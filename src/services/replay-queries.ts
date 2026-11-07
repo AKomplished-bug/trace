@@ -127,7 +127,7 @@ export async function getTransactionWithReplay(db: Db, accountId: string, transa
   return db.transaction((tx) => readTransactionWithReplay(tx, accountId, transactionId, log), READ_SNAPSHOT);
 }
 
-async function readTransactionWithReplay(tx: Tx, accountId: string, transactionId: string, log: Logger) {
+export async function readTransactionWithReplay(tx: Tx, accountId: string, transactionId: string, log: Logger) {
   const detail = await readDetail(tx, accountId, transactionId);
   if (!detail) return null;
   const steps = await readTimeline(tx, accountId, transactionId);

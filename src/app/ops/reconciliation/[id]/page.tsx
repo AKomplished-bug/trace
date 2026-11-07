@@ -10,6 +10,7 @@ import { ReconciliationStatusBadge, RunStatusBadge } from "../../../_components/
 import { requirePageSession } from "../../../_lib/auth";
 import { runIdParams } from "../../../_lib/schemas";
 import { ActionButton } from "../action-button";
+import { InvestigationAction } from "../investigation-action";
 
 export const metadata = { title: "Reconciliation run · Trace" };
 
@@ -132,6 +133,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
                     </span>
                   ) : null}
                   {r.resolvedAt && <span className="text-xs text-emerald-700">resolved <LocalTime value={r.resolvedAt} /></span>}
+                  {r.status !== "MATCHED" && (
+                    <span className="ml-auto">
+                      <InvestigationAction recordId={r.id} investigationId={r.investigationId} />
+                    </span>
+                  )}
                 </div>
                 <div className="mt-2 grid gap-4 sm:grid-cols-2">
                   <Side title="Trace" id={<Id value={r.transactionId} />} status={r.internalStatus} cents={r.internalAmountCents} />

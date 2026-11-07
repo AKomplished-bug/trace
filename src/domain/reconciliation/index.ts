@@ -287,3 +287,15 @@ export function countByStatus(results: readonly { status: ReconciliationStatus }
   for (const r of results) counts[r.status] += 1;
   return counts;
 }
+
+const DEBIT_TYPES: ReadonlySet<ReconciledType> = new Set(["CARD_PURCHASE", "OUTBOUND_PAYMENT"]);
+
+/**
+ * The signed ADJUSTMENT (credit +, debit −) that would bring our ledger to the provider's amount,
+ * given the difference external − internal: a debit type the provider took more for needs a
+ * further debit; a credit type it paid more for needs a further credit. Null when nothing differs.
+ */
+export function suggestedAdjustmentCents(type: string, differenceCents: number | null): number | null {
+  if (!differenceCents) return null;
+  return DEBIT_TYPES.has(type as ReconciledType) ? -differenceCents : differenceCents;
+}

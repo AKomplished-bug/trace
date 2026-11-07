@@ -7,6 +7,7 @@ import {
   countByStatus,
   fundingRecord,
   internalAmountCents,
+  suggestedAdjustmentCents,
   transferRecords,
   type ClassifyOptions,
   type ExternalRecord,
@@ -296,5 +297,16 @@ describe("transferRecords", () => {
       ["PAYMENT_RETURN", "ret_1", "COMPLETED", null],
     ]);
     expect(records[1].id).toBe("ach_1");
+  });
+});
+
+describe("suggestedAdjustmentCents", () => {
+  it("debits more when a debit settled higher at the provider, credits more for a credit", () => {
+    expect(suggestedAdjustmentCents("CARD_PURCHASE", 1500)).toBe(-1500);
+    expect(suggestedAdjustmentCents("OUTBOUND_PAYMENT", -200)).toBe(200);
+    expect(suggestedAdjustmentCents("FUNDING", -1000)).toBe(-1000);
+    expect(suggestedAdjustmentCents("CARD_REVERSAL", 500)).toBe(500);
+    expect(suggestedAdjustmentCents("FUNDING", 0)).toBeNull();
+    expect(suggestedAdjustmentCents("FUNDING", null)).toBeNull();
   });
 });

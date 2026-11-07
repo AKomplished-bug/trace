@@ -9,6 +9,7 @@ import { ReconciliationStatusBadge, RunStatusBadge } from "../../_components/sta
 import { requirePageSession } from "../../_lib/auth";
 import { DEFAULT_RECONCILIATION_DAYS, RECONCILIATION_PROVIDERS, reconciliationListQuery } from "../../_lib/schemas";
 import { ActionButton } from "./action-button";
+import { InvestigationAction } from "./investigation-action";
 
 export const metadata = { title: "Reconciliation · Trace" };
 
@@ -137,8 +138,9 @@ export default async function ReconciliationPage({ searchParams }: { searchParam
                         <td className="whitespace-nowrap px-4 py-2.5 text-xs text-neutral-500">
                           <LocalTime value={e.createdAt} />
                         </td>
-                        <td className="px-4 py-2.5 text-right">
-                          <Link href={`/ops/reconciliation/${e.runId}#record-${e.id}`} className="text-xs text-neutral-600 hover:text-neutral-900">
+                        <td className="space-y-1 px-4 py-2.5 text-right">
+                          <InvestigationAction recordId={e.id} investigationId={e.investigationId} />
+                          <Link href={`/ops/reconciliation/${e.runId}#record-${e.id}`} className="block text-xs text-neutral-600 hover:text-neutral-900">
                             Run →
                           </Link>
                         </td>
