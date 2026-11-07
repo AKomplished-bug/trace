@@ -19,6 +19,17 @@ function noExampleSecretInProduction(env: { NODE_ENV?: string; SESSION_SECRET: s
   }
 }
 
+// Seeded users' passwords (db:seed only). Empty counts as unset.
+const seedPassword = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(12, "must be at least 12 characters").optional(),
+);
+const seedFields = {
+  NODE_ENV: z.string().optional(),
+  TRACE_OWNER_PASSWORD: seedPassword,
+  TRACE_OPS_PASSWORD: seedPassword,
+};
+
 const schema = z
   .object({
     ...databaseFields,
@@ -34,10 +45,17 @@ const schema = z
   .superRefine(noExampleSecretInProduction);
 const sessionSchema = z.object(sessionFields).superRefine(noExampleSecretInProduction);
 const databaseSchema = z.object(databaseFields);
+const seedSchema = z.object({ ...databaseFields, ...seedFields }).superRefine((env, ctx) => {
+  if (env.NODE_ENV !== "production") return;
+  for (const name of ["TRACE_OWNER_PASSWORD", "TRACE_OPS_PASSWORD"] as const) {
+    if (env[name] === undefined) ctx.addIssue({ code: "custom", path: [name], message: "is required in production" });
+  }
+});
 
 export type Config = z.infer<typeof schema>;
 export type SessionConfig = z.infer<typeof sessionSchema>;
 export type DatabaseConfig = z.infer<typeof databaseSchema>;
+export type SeedConfig = z.infer<typeof seedSchema>;
 
 function parseWith<S extends z.ZodType>(target: S, env: Record<string, string | undefined>): z.infer<S> {
   const result = target.safeParse(env);
@@ -62,6 +80,11 @@ export function parseSessionConfig(env: Record<string, string | undefined>): Ses
 /** Only DATABASE_URL, for scripts (migrate, seed) that never call a provider. */
 export function parseDatabaseConfig(env: Record<string, string | undefined>): DatabaseConfig {
   return parseWith(databaseSchema, env);
+}
+
+/** DATABASE_URL and the seeded users' passwords, for db:seed; both passwords required in production. */
+export function parseSeedConfig(env: Record<string, string | undefined>): SeedConfig {
+  return parseWith(seedSchema, env);
 }
 
 let cached: Config | undefined;

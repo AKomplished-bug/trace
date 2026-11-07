@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EXAMPLE_SESSION_SECRET, parseConfig, parseDatabaseConfig, parseSessionConfig } from "./config";
+import { EXAMPLE_SESSION_SECRET, parseConfig, parseDatabaseConfig, parseSeedConfig, parseSessionConfig } from "./config";
 
 const valid = {
   DATABASE_URL: "postgres://trace:trace@localhost:5433/trace",
@@ -78,5 +78,34 @@ describe("scoped configs", () => {
     expect(parseDatabaseConfig({ DATABASE_URL: valid.DATABASE_URL })).toEqual({ DATABASE_URL: valid.DATABASE_URL });
     expect(() => parseSessionConfig({})).toThrow("Invalid environment: SESSION_SECRET is required");
     expect(() => parseDatabaseConfig({})).toThrow("Invalid environment: DATABASE_URL is required");
+  });
+});
+
+describe("parseSeedConfig", () => {
+  const db = { DATABASE_URL: valid.DATABASE_URL };
+
+  it("requires both seeded passwords in production, counting empty as missing", () => {
+    expect(() => parseSeedConfig({ ...db, NODE_ENV: "production", TRACE_OWNER_PASSWORD: "", TRACE_OPS_PASSWORD: undefined })).toThrow(
+      "Invalid environment: TRACE_OWNER_PASSWORD is required; TRACE_OPS_PASSWORD is required",
+    );
+    expect(parseSeedConfig({ ...db, NODE_ENV: "production", TRACE_OWNER_PASSWORD: "o".repeat(12), TRACE_OPS_PASSWORD: "p".repeat(12) })).toMatchObject({
+      TRACE_OWNER_PASSWORD: "o".repeat(12),
+    });
+  });
+
+  it("leaves them optional outside production", () => {
+    const env = parseSeedConfig({ ...db, TRACE_OWNER_PASSWORD: "" });
+    expect(env.TRACE_OWNER_PASSWORD).toBeUndefined();
+    expect(env.TRACE_OPS_PASSWORD).toBeUndefined();
+  });
+
+  it("refuses a password shorter than 12 characters without echoing it", () => {
+    let message = "";
+    try {
+      parseSeedConfig({ ...db, TRACE_OPS_PASSWORD: "short-pw" });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toBe("Invalid environment: TRACE_OPS_PASSWORD must be at least 12 characters");
   });
 });

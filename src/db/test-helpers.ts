@@ -2,7 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import type pg from "pg";
 import { createDb, createPool, type Db } from "./client";
 import { getAccountReplay } from "../services/replay-queries";
-import { seed, SEED } from "./seed";
+import { seed, SEED, testPasswordHashes, type SeedPasswordHashes } from "./seed";
 import { accounts, ledgerEntries, transactions } from "./schema";
 
 /** Test-only database on DATABASE_URL_TEST (migrated by test-global-setup.ts). */
@@ -13,14 +13,17 @@ export function createTestDb(max = 10): { pool: pg.Pool; db: Db } {
   return { pool, db: createDb(pool) };
 }
 
-/** Empties every table and re-applies the demo seed. */
+// Hashed once per test file: scrypt is deliberately slow.
+let passwordHashes: Promise<SeedPasswordHashes> | undefined;
+
+/** Empties every table and re-applies the demo seed, with TEST_PASSWORDS. */
 export async function resetDb(db: Db): Promise<void> {
   const { rows } = await db.execute<{ tablename: string }>(
     sql`SELECT tablename FROM pg_tables WHERE schemaname = 'public'`,
   );
   const tables = rows.map((row) => `"${row.tablename}"`).join(", ");
   await db.execute(sql.raw(`TRUNCATE ${tables} RESTART IDENTITY CASCADE`));
-  await seed(db);
+  await seed(db, await (passwordHashes ??= testPasswordHashes()));
 }
 
 export async function createTransaction(
