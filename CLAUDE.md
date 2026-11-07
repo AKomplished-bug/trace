@@ -291,4 +291,7 @@ npm run typecheck
 npm run lint
 npm test             # Vitest: unit + integration against DATABASE_URL_TEST (needs db:up)
 npm run build
+ENV_FILE=.env infra/aws/bootstrap.sh  # AWS (profile corgi, ap-southeast-2): create the resources; re-runnable
+infra/aws/deploy.sh    # build + push the commit's image, migrate, roll trace-web and trace-worker
+infra/aws/run-task.sh migrate|seed  # one-off task on the image (seed once after the first deploy)
 ```
