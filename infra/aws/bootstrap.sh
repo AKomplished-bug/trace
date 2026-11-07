@@ -91,13 +91,14 @@ fi
 # (on a new instance, or reset an existing one) and store the URL once the instance is available.
 if ! awsc secretsmanager describe-secret --secret-id "${SECRET_PREFIX}DATABASE_URL" >/dev/null 2>&1; then
   DB_PASSWORD=$(openssl rand -hex 24)
+  printf '%s' "$DB_PASSWORD" >"$WORK/dbpw" # jq reads it from the file, so it's never in argv
   if awsc rds describe-db-instances --db-instance-identifier "$DB_ID" >/dev/null 2>&1; then
-    jq -n --arg id "$DB_ID" --arg pw "$DB_PASSWORD" \
+    jq -n --arg id "$DB_ID" --rawfile pw "$WORK/dbpw" \
       '{DBInstanceIdentifier: $id, MasterUserPassword: $pw, ApplyImmediately: true}' >"$WORK/db.json"
     awsc rds modify-db-instance --cli-input-json "file://$WORK/db.json" >/dev/null
     sleep 30 # the reset takes a moment to start; wait below for it to finish
   else
-    jq -n --arg id "$DB_ID" --arg pw "$DB_PASSWORD" --arg db "$DB_NAME" --arg user "$DB_USER" --arg sg "$DB_SG" \
+    jq -n --arg id "$DB_ID" --rawfile pw "$WORK/dbpw" --arg db "$DB_NAME" --arg user "$DB_USER" --arg sg "$DB_SG" \
       --arg tk "$TAG_KEY" --arg tv "$TAG_VALUE" '{
         DBInstanceIdentifier: $id, DBInstanceClass: "db.t4g.micro", Engine: "postgres", EngineVersion: "16",
         DBName: $db, MasterUsername: $user, MasterUserPassword: $pw,
