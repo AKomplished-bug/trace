@@ -13,7 +13,9 @@ CLOUDFRONT_PREFIX_LIST=$(awsc ec2 describe-managed-prefix-lists \
   --query 'PrefixLists[0].PrefixListId' --output text)
 # Managed CloudFront policies: CachingDisabled, and AllViewerAndCloudFrontHeaders-2022-06 (every viewer
 # header including Host, cookies, query, plus CloudFront-Viewer-Address, the client IP login throttles on).
+# CachingOptimized (no cookies, headers or query in the key) is only for the content-hashed /_next/static.
 CACHE_POLICY_CACHING_DISABLED=4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+CACHE_POLICY_CACHING_OPTIMIZED=658327ea-f89d-4fab-a63d-7e88639e58f6
 ORIGIN_REQUEST_POLICY=33f36d7e-f396-46d9-90e0-52428a34d9dc
 
 echo "== ECR repository"
@@ -210,13 +212,21 @@ if [ "$DIST_ID" = None ]; then
   DIST_ID=$(awsc cloudfront create-distribution-with-tags --distribution-config-with-tags "file://$WORK/cf.json" \
     --query 'Distribution.Id' --output text)
 fi
-# New or existing, the distribution gets the current origin request policy and sends X-Origin-Verify
-# to the ALB; updated in place only when either differs.
+# New or existing, the distribution gets the current origin request policy, sends X-Origin-Verify to
+# the ALB and caches /_next/static/* at the edge (added once, when no behaviour has that path);
+# updated in place only when something differs.
 awsc cloudfront get-distribution-config --id "$DIST_ID" >"$WORK/cf-current.json"
-jq --arg orp "$ORIGIN_REQUEST_POLICY" --rawfile secret "$WORK/origin-secret" '.DistributionConfig
+jq --arg orp "$ORIGIN_REQUEST_POLICY" --arg static "$CACHE_POLICY_CACHING_OPTIMIZED" \
+  --rawfile secret "$WORK/origin-secret" '.DistributionConfig
   | .DefaultCacheBehavior.OriginRequestPolicyId = $orp
   | .Origins.Items[0].CustomHeaders = {Quantity: 1,
-      Items: [{HeaderName: "X-Origin-Verify", HeaderValue: ($secret | rtrimstr("\n"))}]}' \
+      Items: [{HeaderName: "X-Origin-Verify", HeaderValue: ($secret | rtrimstr("\n"))}]}
+  | if any(.CacheBehaviors.Items[]?; .PathPattern == "/_next/static/*") then . else
+      .CacheBehaviors = {Quantity: (.CacheBehaviors.Quantity + 1), Items: ((.CacheBehaviors.Items // []) + [{
+        PathPattern: "/_next/static/*", TargetOriginId: "alb", ViewerProtocolPolicy: "redirect-to-https",
+        Compress: true, CachePolicyId: $static,
+        AllowedMethods: {Quantity: 2, Items: ["GET","HEAD"], CachedMethods: {Quantity: 2, Items: ["GET","HEAD"]}}}])}
+    end' \
   "$WORK/cf-current.json" >"$WORK/cf-update.json"
 if ! jq -e --slurpfile want "$WORK/cf-update.json" '.DistributionConfig == $want[0]' "$WORK/cf-current.json" >/dev/null; then
   awsc cloudfront update-distribution --id "$DIST_ID" --if-match "$(jq -r .ETag "$WORK/cf-current.json")" \
