@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { externalEventStatus } from "../../db/schema";
+import { isDurationCounter, latencyByRoute } from "../../services/latency";
 import { readCounters } from "../../services/metrics";
 import { eventCountsByStatus } from "../../services/ops-events";
 import { outboxBacklog } from "../../services/payments";
 import { apiDeps } from "../api/deps";
 import { EventStatusBadge } from "../_components/status-badge";
 import { requirePageSession } from "../_lib/auth";
+import { LatencyTable } from "./latency-table";
 
 export const metadata = { title: "Operations · Trace" };
 
@@ -18,7 +20,8 @@ function labelText(labels: Record<string, string>): string {
 export default async function OpsHome() {
   await requirePageSession("OPS");
   const db = apiDeps().db;
-  const [byStatus, backlog, counters] = await Promise.all([eventCountsByStatus(db), outboxBacklog(db), readCounters(db)]);
+  const [byStatus, backlog, allCounters] = await Promise.all([eventCountsByStatus(db), outboxBacklog(db), readCounters(db)]);
+  const counters = allCounters.filter((c) => !isDurationCounter(c.name));
 
   return (
     <div className="space-y-6">
@@ -78,6 +81,8 @@ export default async function OpsHome() {
           </div>
         </div>
       </section>
+
+      <LatencyTable routes={latencyByRoute(allCounters)} />
 
       <section className="overflow-hidden rounded-md border border-neutral-200 bg-white">
         <div className="border-b border-neutral-100 px-4 py-2.5">

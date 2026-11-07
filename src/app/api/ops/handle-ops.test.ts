@@ -9,6 +9,7 @@ import { sessionConfig } from "../../../lib/config";
 import { newId } from "../../../lib/ids";
 import { logger } from "../../../lib/logger";
 import { SESSION_COOKIE, signSession } from "../../../lib/session";
+import { recordRequestDuration } from "../../../services/latency";
 import { countOutcome, flushCounters } from "../../../services/metrics";
 import { appendTraceEvent } from "../../../services/trace";
 import { handleGetEvent, handleListEvents, handleRetryEvent } from "./events/handle-ops-events";
@@ -237,5 +238,37 @@ describe("GET /api/ops/metrics", () => {
     ]);
     expect(body.events.byStatus).toEqual({ RECEIVED: 0, PROCESSING: 0, PROCESSED: 1, RETRY: 0, FAILED: 2, IGNORED: 0 });
     expect(body.payments).toEqual({ pending: 0, oldestUnsubmittedAgeSeconds: null, givenUp: 1 });
+  });
+
+  it("returns the request duration histogram per route with p50/p95, not in counters", async () => {
+    for (const ms of [3, 7, 8, 40, 300]) recordRequestDuration("GET /api/account/balance", ms);
+    countOutcome("events_processed_total", { provider: "stripe", type: "payment_intent.succeeded", outcome: "processed" });
+    await flushCounters(db, logger);
+
+    const { status, body } = await json(handleGetMetrics(deps, request("/api/ops/metrics")));
+    expect(status).toBe(200);
+    expect(body.counters.map((c: { name: string }) => c.name)).toEqual(["events_processed_total"]);
+    expect(body.latency).toEqual([
+      {
+        route: "GET /api/account/balance",
+        count: 5,
+        sumMs: 358,
+        buckets: [
+          { le: "5", count: 1 },
+          { le: "10", count: 3 },
+          { le: "25", count: 3 },
+          { le: "50", count: 4 },
+          { le: "100", count: 4 },
+          { le: "250", count: 4 },
+          { le: "500", count: 5 },
+          { le: "1000", count: 5 },
+          { le: "2500", count: 5 },
+          { le: "+Inf", count: 5 },
+        ],
+        p50Ms: 9,
+        p95Ms: 438,
+        maxBucket: "500",
+      },
+    ]);
   });
 });
