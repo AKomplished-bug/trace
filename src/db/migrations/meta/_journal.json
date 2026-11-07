@@ -29,6 +29,13 @@
       "when": 1794001331713,
       "tag": "0003_payment_outbox",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794023354259,
+      "tag": "0004_ops_events",
+      "breakpoints": true
     }
   ]
 }

@@ -9,6 +9,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -266,6 +267,9 @@ export const externalEvents = pgTable(
     index("external_events_due_idx")
       .on(t.nextAttemptAt)
       .where(sql`${t.status} IN ('RECEIVED', 'RETRY', 'PROCESSING')`),
+    // Ops event viewer: newest first (keyset on received_at, id), all or by status; counts by status.
+    index("external_events_received_idx").on(t.receivedAt, t.id),
+    index("external_events_status_received_idx").on(t.status, t.receivedAt, t.id),
   ],
 );
 
@@ -339,18 +343,45 @@ export const transactionEvents = pgTable(
   (t) => [
     uniqueIndex("transaction_events_transaction_seq_key").on(t.transactionId, t.seq),
     uniqueIndex("transaction_events_account_seq_key").on(t.accountId, t.accountSeq),
+    // Ops event viewer: the trace steps (and so the transactions) an external event caused.
+    index("transaction_events_external_event_id_idx").on(t.externalEventId),
   ],
 );
 
-export const auditEvents = pgTable("audit_events", {
-  id: id(),
-  actorType: auditActorType("actor_type").notNull(),
-  actorId: text("actor_id"),
-  action: text("action").notNull(),
-  entityType: text("entity_type").notNull(),
-  entityId: text("entity_id").notNull(),
-  previousState: jsonb("previous_state"),
-  newState: jsonb("new_state"),
-  metadata: jsonb("metadata"),
-  createdAt: createdAt(),
-});
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: id(),
+    actorType: auditActorType("actor_type").notNull(),
+    actorId: text("actor_id"),
+    action: text("action").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    // Sanitized snapshots (ids, statuses, counts); never payloads or personal data.
+    previousState: jsonb("previous_state"),
+    newState: jsonb("new_state"),
+    metadata: jsonb("metadata"),
+    correlationId: uuid("correlation_id").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("audit_events_entity_idx").on(t.entityType, t.entityId, t.createdAt),
+    index("audit_events_created_idx").on(t.createdAt),
+  ],
+);
+
+/**
+ * Outcome counters shared by the web and worker processes: each process buffers increments and
+ * adds them here (`INSERT … ON CONFLICT DO UPDATE value = value + n`), outside business transactions.
+ */
+export const metricCounters = pgTable(
+  "metric_counters",
+  {
+    name: text("name").notNull(),
+    // jsonb compares by content regardless of key order, so one label set is one row.
+    labels: jsonb("labels").$type<Record<string, string>>().notNull().default({}),
+    value: bigint("value", { mode: "number" }).notNull(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.name, t.labels] })],
+);
