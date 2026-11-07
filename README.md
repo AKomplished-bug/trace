@@ -181,7 +181,7 @@ browser ── HTTPS ──▶ CloudFront ── HTTP ──▶ ALB (CloudFront 
 ```
 
 ```sh
-ENV_FILE=.env infra/aws/bootstrap.sh   # once (re-runnable): ECR, log group, security groups, secrets, RDS, ALB, ECS cluster, CloudFront, budget
+ENV_FILE=.env infra/aws/bootstrap.sh   # once (re-runnable): ECR, log group, security groups, secrets, execution role, RDS, ALB, ECS cluster, CloudFront, budget
 infra/aws/deploy.sh                    # each release: build + push the commit's image, migrate, roll trace-web and trace-worker
 infra/aws/run-task.sh seed             # once: the base seed (Acme Inc., owner + ops users, $0 account, card)
 ```

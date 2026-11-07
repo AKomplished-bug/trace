@@ -75,6 +75,17 @@ ensure_secret INCREASE_API_KEY "$WORK/increase-key"
 printf 'placeholder-increase-webhook-not-configured' >"$WORK/increase-whsec"
 ensure_secret INCREASE_WEBHOOK_SECRET "$WORK/increase-whsec"
 
+echo "== Execution role"
+if ! awsc iam get-role --role-name "$EXECUTION_ROLE" >/dev/null 2>&1; then
+  awsc iam create-role --role-name "$EXECUTION_ROLE" --tags "$TAGS" --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Principal": {"Service": "ecs-tasks.amazonaws.com"}, "Action": "sts:AssumeRole"}]
+  }' >/dev/null
+fi
+# Pull from ECR and write logs; attaching an attached policy is a no-op.
+awsc iam attach-role-policy --role-name "$EXECUTION_ROLE" \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
 echo "== Execution role can read the trace secrets"
 awsc iam put-role-policy --role-name "$EXECUTION_ROLE" --policy-name trace-secrets --policy-document "{
   \"Version\": \"2012-10-17\",
