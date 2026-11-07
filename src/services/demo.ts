@@ -1,7 +1,11 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { withTransaction, type Db, type Tx } from "../db/client";
 import { holds, transactions } from "../db/schema";
 import { SEED } from "../db/seed";
+import { createFakeIncrease, seedCardPayment, type CardPaymentJson } from "../integrations/increase/fake-increase";
+import settledCardPayment from "../integrations/increase/fixtures/card_payment.settled.json";
+import { createFakeStripe, seedIntent } from "../integrations/stripe/fake-stripe";
+import succeededIntent from "../integrations/stripe/fixtures/payment_intent.succeeded.json";
 import { logger as rootLogger, type Logger } from "../lib/logger";
 import { lockAccount } from "./accounts";
 import { postLedgerEntry } from "./ledger";
@@ -145,4 +149,45 @@ async function setStatus(tx: Tx, id: string, amountCents: number, from: Status, 
       providerRef,
     });
   }
+}
+
+/**
+ * Dev and test only: the providers' side of the demo story, from the Stripe and Increase fakes (no
+ * real provider has "demo" records). Stripe agrees with the funding; Increase reports the card
+ * purchase settled for `providerSettledCents` — $80 by default, against our $65 — so reconciling
+ * provider "demo" finds the core demo's AMOUNT_MISMATCH. Run the demo story first.
+ */
+export async function demoReconciliationSource(db: Db, { providerSettledCents = DEMO.authorizedCents }: { providerSettledCents?: number } = {}) {
+  const rows = await db
+    .select({ id: transactions.id, createdAt: transactions.createdAt })
+    .from(transactions)
+    .where(inArray(transactions.id, [DEMO.fundingTransactionId, DEMO.purchaseTransactionId]));
+  const createdAt = (id: string) => {
+    const row = rows.find((r) => r.id === id);
+    if (!row) throw new Error("Run the demo story (npm run db:seed:demo) before reconciling it");
+    return row.createdAt;
+  };
+
+  const stripe = createFakeStripe();
+  seedIntent(stripe, {
+    ...structuredClone(succeededIntent),
+    id: "demo_payment_intent_1",
+    amount: DEMO.fundingCents,
+    amount_received: DEMO.fundingCents,
+    latest_charge: "demo_charge_1",
+    metadata: { transaction_id: DEMO.fundingTransactionId },
+    created: Math.floor(createdAt(DEMO.fundingTransactionId).getTime() / 1000),
+  });
+
+  const increase = createFakeIncrease();
+  const at = createdAt(DEMO.purchaseTransactionId).toISOString();
+  const [authorization, settlement] = structuredClone(settledCardPayment.elements) as Array<Record<string, unknown>>;
+  Object.assign(authorization, { created_at: at });
+  Object.assign(authorization.card_authorization as object, { id: "demo_authorization_1", amount: DEMO.authorizedCents });
+  Object.assign(settlement, { created_at: at });
+  Object.assign(settlement.card_settlement as object, { id: "demo_settlement_1", amount: providerSettledCents });
+  seedCardPayment(increase, { ...(structuredClone(settledCardPayment) as CardPaymentJson), id: "demo_card_payment_1", created_at: at, elements: [authorization, settlement] });
+
+  // The demo card isn't linked to Increase, so the fake's card is named as ours explicitly.
+  return { payments: stripe.adapter, cards: increase.adapter, scope: { cardIds: [settledCardPayment.card_id], accountIds: [] } };
 }
