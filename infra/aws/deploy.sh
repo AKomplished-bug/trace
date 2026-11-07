@@ -19,7 +19,8 @@ docker push "$IMAGE" >/dev/null
 echo "== Task definitions"
 APP_SECRETS=("${SECRETS[@]}")
 WEB_TD=$(register_task trace-web 256 1024 "$IMAGE" '["node_modules/.bin/next","start","--port","3000"]' "${APP_SECRETS[@]}")
-WORKER_TD=$(register_task trace-worker 256 512 "$IMAGE" '["node_modules/.bin/tsx","src/worker/index.ts"]' "${APP_SECRETS[@]}")
+# tsx as a loader, not the CLI, so the worker is the process that gets SIGTERM.
+WORKER_TD=$(register_task trace-worker 256 512 "$IMAGE" '["node","--import","tsx","src/worker/index.ts"]' "${APP_SECRETS[@]}")
 # Migrate and seed read only DATABASE_URL; run-task.sh overrides the command.
 register_task trace-migrate 256 512 "$IMAGE" '["node_modules/.bin/tsx","scripts/migrate.ts"]' DATABASE_URL >/dev/null
 

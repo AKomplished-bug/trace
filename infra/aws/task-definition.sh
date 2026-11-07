@@ -21,9 +21,12 @@ register_task() {
       portMappings: (if $family == "trace-web" then [{containerPort: 3000, protocol: "tcp"}] else [] end),
       environment: [{name: "LOG_LEVEL", value: "info"}],
       secrets: $secrets,
-      # tsx runs the worker in a child process; an init process forwards SIGTERM and reaps it.
+      # The tsx CLI (migrate/seed) runs the script in a child process; an init process forwards
+      # SIGTERM and reaps it.
       linuxParameters: {initProcessEnabled: true},
-      stopTimeout: 30,
+      # The worker waits for a reconciliation run in progress (60 s fetch + commit) before exiting;
+      # 120 s is the Fargate maximum before SIGKILL.
+      stopTimeout: (if $family == "trace-worker" then 120 else 30 end),
       logConfiguration: {logDriver: "awslogs", options: {
         "awslogs-group": $logs, "awslogs-region": $region, "awslogs-stream-prefix": $family}}}],
     tags: [{key: $tk, value: $tv}]}' >"$WORK/$family.json"
