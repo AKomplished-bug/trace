@@ -47,9 +47,14 @@ queue. Details and invariants: `CLAUDE.md`.
 `GET /ops/metrics`
 
 ## UI
-Owner: dashboard (available / ledger / pending, recent activity), activity, **transaction
-detail (hero: trace, replay, graph)**, card, payments, balance explanation.
-Ops: dashboard counts, reconciliation queue, investigation page, event viewer.
+Owner: dashboard (available balance first, then ledger, card holds and pending payments; fund and
+send actions; recent activity), activity (filters, summary sheet), **transaction detail (header
+with replay badge; Timeline, Replay, Money graph, External references tabs)**, payments (send
+dialog), balance explanation.
+Ops: needs-attention work queue first (failed events, given-up payments, open exceptions, open
+investigations) then metrics and latency; events, payments, reconciliation and investigations
+with every action behind a confirmation. shadcn/ui on Radix, one accent, system dark mode, WCAG
+2.2 AA (see `DECISIONS.md`).
 
 ## Out of scope (and why)
 Real money/banking, physical cards, KYC/AML, multi-currency, payroll/accounting, complex

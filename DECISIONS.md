@@ -1529,3 +1529,111 @@ UK reviewers should expect each page or API call to take roughly 300 ms–1.5 s,
 network; `Server-Timing` shows the app's share (locally most routes take under 50 ms; login about
 150 ms, which is scrypt).
 Static assets are fast after the first load from each edge.
+
+## 2026-11-07 — The UI is shadcn/ui on Radix, with one accent and the system's dark mode
+
+**Decision**
+Pages keep their server rendering and snapshot reads; the presentation moves to shadcn/ui
+components (copied into `src/components/ui`, Radix base, `radix-nova` style, Tailwind v4 tokens in
+`globals.css`). One indigo accent; status colours (pending, success, danger, neutral) are tokens
+and always come with a text label and an icon. Pending is the only dashed style. Dark mode follows
+`prefers-color-scheme`; there is no toggle. Dependencies added:
+- `radix-ui`: accessible primitives behind Dialog, AlertDialog, Sheet, Tabs, DropdownMenu, Tooltip,
+  Checkbox and Label (focus trapping, focus return, roving tab focus).
+- `class-variance-authority`, `cn`: variant classes and class merging used by the components.
+- `lucide-react`: icons.
+- `sonner`: toasts after a payment, funding or Ops action.
+- dev only: `shadcn` (its `tailwind.css` variants) and `tw-animate-css` (enter/exit animations),
+  both needed only when the CSS is built, so `npm prune --omit=dev` leaves them out of the image.
+- Geist and Geist Mono via `next/font/google`, self-hosted at build time.
+
+**Why**
+Reviewers judge a banking product by whether its numbers look trustworthy: one currency format with
+tabular figures, the available balance first, pending states that can't be mistaken for settled
+ones. shadcn gives accessible primitives without a runtime component library; the source is ours
+to adjust (we changed the focus ring to full strength, made `SidebarInset` a `div` so each page
+owns its `<main>`, and return focus to the trigger when the phone navigation closes).
+
+**Alternatives**
+Hand-rolled Tailwind (no focus management for dialogs and menus); a full dashboard template or
+MUI (heavier, harder to make look like a bank); `next-themes` for a theme toggle (an extra
+dependency and a flash of the wrong theme for a feature nobody asked for).
+
+**Tradeoff**
+About 2,400 lines of component source to own. `next build` needs network access to fetch the fonts
+once.
+
+## 2026-11-07 — The owner forms validate with the API's own schema
+
+**Decision**
+The POST `/api/payments` body schema moved to `src/app/_lib/money-forms.ts` (zod and pure domain
+only), which the API handler and the Send payment dialog both use; Fund account uses the same
+dollar parser. Errors show inline per field, first invalid field focused. The Idempotency-Key is
+kept with the exact body it was sent with (`keyFor`, `src/app/_lib/idempotency.ts`): the same body
+reuses it, so resubmitting after a timeout or a lost response replays instead of creating a second
+payment or charge; a changed body gets a new key, so editing after a failure isn't a 409; a success
+forgets it. When the outcome is unknown (no answer, 5xx, provider error, key conflict) the owner
+reads "We couldn't confirm this went through. Check Activity before trying again." instead of the
+API's message, which is written for API clients ("Retry with the same Idempotency-Key").
+
+**Why**
+The form can't drift from the API, and the user sees "Routing number must be 9 digits." before a
+round trip rather than after.
+
+**Alternatives**
+A separate client schema (two sets of rules that can disagree); server-only validation.
+
+**Tradeoff**
+A client bundle now includes `isValidRoutingNumber` and the limits; both were already public rules.
+
+## 2026-11-07 — What the owner and Ops screens show, and leave out
+
+**Decision**
+- Dashboard: available balance is the hero; ledger, card holds and pending payments sit under it.
+  Recent activity streams in a Suspense boundary, so the balance never waits for the list. Quick
+  actions are Fund account and Send payment. The card authorization simulator stays API-only,
+  as it was before this redesign.
+- Activity: type and status filters (the query supports nothing else, so there is no text
+  search); a row opens a summary sheet that links to the full money trace.
+- Transaction page: a header with the amount (through `amountView`), status, ids and the replay
+  badge, then Timeline, Replay, Money graph and External references tabs. All panels stay
+  mounted so `#step-…` and `#event-…` links from the graph switch to the right tab.
+- Ops overview is a work queue: failed events, given-up payments, open reconciliation exceptions
+  and open investigations come first, each with its count, the first few items with their one-click
+  action and a link; metrics and latency come after. Every Ops action (retry, requeue, confirm
+  not sent, run or retry reconciliation, resolve) goes through a confirmation dialog that says what
+  will happen; opening an investigation doesn't, because opening it twice returns the same case.
+- The given-up payments list no longer shows the recipient's name (Ops views show ids and
+  amounts, never counterparty names); it shows the payment and transaction ids.
+
+**Why**
+Exceptions first is how Ops works; progressive disclosure keeps rows scannable on a phone.
+
+**Alternatives**
+Client-side search over the loaded page (misleading with keyset pagination); a separate card
+simulator panel for owners (sandbox-only controls next to real money actions).
+
+**Tradeoff**
+Hidden panels are still rendered, so the transaction page HTML carries all four views.
+
+## 2026-11-07 — Accessibility target: WCAG 2.2 AA, checked with axe and a scripted keyboard pass
+
+**Decision**
+Text contrast ≥ 4.5:1 and input borders and focus ring ≥ 3:1 in both themes; status never by
+colour alone; targets ≥ 24 px (row buttons cover the whole row); a skip link; one `<main>` per
+page, named navigation landmarks, table captions; `scroll-padding-top` so a focused element is
+never hidden under the sticky top bar. Checked with axe-core (WCAG 2.0/2.1/2.2 A and AA plus
+best practice) on every main screen at 1440 px and 375 px in light and dark, and with a scripted
+keyboard pass (skip link, sheets, dialogs, menus, tabs, phone navigation).
+
+**Why**
+WCAG 2.2 AA is the bar for financial services in the UK and EU, and keyboard and screen-reader
+users move money too.
+
+**Alternatives**
+`@axe-core/playwright` as a dev dependency with a CI job (the right next step; it needs a browser
+in CI).
+
+**Tradeoff**
+The axe and keyboard checks ran from a scratch script outside the repo, so they aren't repeatable
+in CI yet.
