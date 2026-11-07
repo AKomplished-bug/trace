@@ -63,6 +63,12 @@ function checkPost(request: Request): BodyKind | Response {
   return errorResponse(415, "unsupported_media_type", "Send application/json or a form (application/x-www-form-urlencoded)");
 }
 
+// Relative Location: behind CloudFront, request.url in a route handler carries the container's own
+// address (localhost:3000), so an absolute redirect built from it sends the browser off-site.
+function seeOther(path: string): NextResponse {
+  return new NextResponse(null, { status: 303, headers: { Location: path } });
+}
+
 /**
  * POST /api/auth/login — `{ email, password }`. JSON answers with the user; a form post from /login
  * redirects to the user's home, or back to /login with `?error=` on failure. Every failure is the
@@ -92,7 +98,7 @@ export async function handleLogin(deps: HandlerDeps, request: Request): Promise<
         return invalidRequest(body.error);
       }
       const fail = (status: 401 | 429 | 503, [code, message]: readonly [string, string]) =>
-        form ? NextResponse.redirect(new URL(`/login?error=${code}`, request.url), 303) : errorResponse(status, code, message);
+        form ? seeOther(`/login?error=${code}`) : errorResponse(status, code, message);
 
       const secret = sessionConfig().SESSION_SECRET;
       const ip = viewerIp(request);
@@ -130,7 +136,7 @@ export async function handleLogin(deps: HandlerDeps, request: Request): Promise<
       const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
       const token = signSession({ userId: user.id, role: user.role, accountId: user.accountId, expiresAt }, secret);
       const response = form
-        ? NextResponse.redirect(new URL(HOME_FOR_ROLE[user.role], request.url), 303)
+        ? seeOther(HOME_FOR_ROLE[user.role])
         : NextResponse.json({ user: { id: user.id, name: user.name, role: user.role, businessName: user.businessName } });
       response.cookies.set(SESSION_COOKIE, token, cookieOptions(SESSION_TTL_SECONDS));
       annotate({ user_id: user.id, role: user.role, account_id: user.accountId ?? undefined });
@@ -148,7 +154,7 @@ export async function handleLogout(deps: HandlerDeps, request: Request): Promise
   return withRequestLog(deps, "POST /api/auth/logout", async () => {
     const kind = checkPost(request);
     if (kind instanceof Response) return kind;
-    const response = kind === "form" ? NextResponse.redirect(new URL("/login", request.url), 303) : NextResponse.json({ ok: true });
+    const response = kind === "form" ? seeOther("/login") : NextResponse.json({ ok: true });
     response.cookies.set(SESSION_COOKIE, "", cookieOptions(0));
     return response;
   });
