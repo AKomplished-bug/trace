@@ -68,7 +68,7 @@ describe("POST /api/auth/login", () => {
   it("redirects a form post to the user's home", async () => {
     const response = await handleLogin(deps, form(OPS));
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("http://localhost/ops");
+    expect(response.headers.get("location")).toBe("/ops");
     expect(verifySession(cookieToken(response), sessionConfig().SESSION_SECRET)).toMatchObject({ role: "OPS", accountId: null });
   });
 
@@ -87,7 +87,7 @@ describe("POST /api/auth/login", () => {
   it("sends a failed form post back to /login with the generic error and no cookie", async () => {
     const response = await handleLogin(deps, form({ ...OWNER, password: "not-the-password" }));
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("http://localhost/login?error=invalid_credentials");
+    expect(response.headers.get("location")).toBe("/login?error=invalid_credentials");
     expect(response.headers.get("set-cookie")).toBeNull();
   });
 
