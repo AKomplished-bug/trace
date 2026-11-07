@@ -728,12 +728,14 @@ One more status in the activity filter and labels.
 ## 2026-11-07 — Submission failures: a first-attempt refusal releases the hold; unknown gives up, PENDING
 
 **Decision**
-- Timeout, 5xx or 429, or our own failure after the call → retry with backoff (5 s doubling,
-  capped at 15 min), `last_submit_error` stored as a sanitized message.
+- Timeout, 5xx or 429, Increase 401/403/409 (other than a reused key), or our own failure after
+  the call → retry with backoff (5 s doubling, capped at 15 min), hold kept, `last_submit_error`
+  stored as a sanitized message.
 - Increase 4xx **on the first attempt**, other than 401/403/409 → `FAILED`, hold released
   (`HOLD_RELEASED` then `STATUS_CHANGED → FAILED`), no ledger entry.
-- Anything whose outcome is unknown → the submitter **gives up**: a 4xx on a later attempt, any
-  401/403/409, a 409 `idempotency_key_already_used_error`, 10 failed attempts, or a claim seen more
+- Anything whose outcome is unknown → the submitter **gives up**: a 4xx other than 401/403/409 on a
+  later attempt, a 409 `idempotency_key_already_used_error`, 10 failed attempts (401/403/409
+  included), or a claim seen more
   than 10 times (crash loop). The payment stays `PENDING` with its hold, `submit_gave_up_at` is set,
   which removes it from the claim query and its partial index, and the trace gets a `STATUS_CHANGED
   PENDING → PENDING` row ("Couldn't confirm the payment was sent"; no new trace kind). The worker's
@@ -749,7 +751,9 @@ After a timeout the outcome at Increase is unknown: it may have created the tran
 the answer. Releasing the reservation could then let the owner spend money that has already left.
 Increase replays the original response for a repeated key, so a 4xx on the *first* attempt is a
 definite "not created". After an earlier timeout it isn't: that request may still have created it.
-401/403/409 are our credentials, permissions or a conflict, never proof either way. Leaving the
+401/403/409 are our credentials, permissions or a conflict, never proof either way, and they can
+pass (a rotated key, a transient conflict), so they get the same budget as a timeout instead of
+giving up at once; they never release the hold. Leaving the
 payment `PENDING` rather than `FAILED` keeps one state machine: the provider's word, by webhook,
 still moves it, so there's no `FAILED → SUBMITTED` edge to invent.
 

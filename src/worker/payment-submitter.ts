@@ -30,7 +30,7 @@ import { backoffMs } from "./events";
 /** Same budget and backoff as events: 5 s doubling, capped at 15 min; about 36 minutes before giving up. */
 export const MAX_SUBMIT_ATTEMPTS = 10;
 const MAX_ERROR_LENGTH = 1_000;
-/** Increase refusals that don't show the transfer wasn't created: auth, permissions, conflicts. */
+/** Increase refusals that don't show the transfer wasn't created: auth, permissions, conflicts. Retried within the budget. */
 const UNKNOWN_REJECTION_STATUSES: ReadonlySet<number> = new Set([401, 403, 409]);
 
 export interface ClaimedPayment {
@@ -151,19 +151,19 @@ export async function submitPayment(db: Db, claim: ClaimedPayment, provider: Tra
       // A transfer exists for our key with different arguments: money may move. Never release.
       return giveUp(db, claim, errLog.child({ provider_object_id: error.resourceId }), safeErrorMessage(error), error);
     }
-    if (error instanceof ProviderRejectedError) {
+    // 401/403/409 are our credentials, permissions or a conflict, never proof either way and
+    // possibly passing (a rotated key, a lock at Increase): retried like a timeout, hold kept.
+    if (error instanceof ProviderRejectedError && !UNKNOWN_REJECTION_STATUSES.has(error.status ?? 0)) {
       // Only a refusal of the very first attempt proves nothing was sent: after a timeout, Increase
-      // may already have created the transfer. 401/403/409 are our credentials, permissions or a
-      // conflict, never proof either way.
-      const refused = claim.attempts === 1 && !UNKNOWN_REJECTION_STATUSES.has(error.status ?? 0);
-      return refused ? reject(db, claim, errLog, safeErrorMessage(error), error) : giveUp(db, claim, errLog, safeErrorMessage(error), error);
+      // may already have created the transfer.
+      return claim.attempts === 1 ? reject(db, claim, errLog, safeErrorMessage(error), error) : giveUp(db, claim, errLog, safeErrorMessage(error), error);
     }
     if (claim.attempts >= MAX_SUBMIT_ATTEMPTS) return giveUp(db, claim, errLog, safeErrorMessage(error), error);
     return retry(db, claim, errLog, safeErrorMessage(error), error);
   }
 }
 
-/** Timeouts, 5xx, rate limits, our own failures after the call: try again later with the same key. */
+/** Timeouts, 5xx, rate limits, 401/403/409, our own failures after the call: try again later with the same key. */
 async function retry(db: Db, claim: ClaimedPayment, log: Logger, message: string, error: unknown): Promise<SubmitOutcome> {
   const delaySeconds = backoffMs(claim.attempts) / 1000;
   const updated = await db

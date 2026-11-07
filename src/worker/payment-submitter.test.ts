@@ -205,8 +205,22 @@ describe("payment submitter (outbox)", () => {
     await expectGivenUp(payment, "invalid_parameters_error");
   });
 
-  it("401/403/409 are unknown even on the first attempt", async () => {
+  it("401/403/409 are unknown even on the first attempt: retried with the hold kept, then submitted", async () => {
     const payment = await pay();
+    fake.next = "reject";
+    expect(await submitOnce()).toBe("retry");
+    expect(await current(payment.id)).toMatchObject({ status: "PENDING", submitGaveUpAt: null, lastSubmitError: expect.stringContaining("invalid_operation_error") });
+    expect((await holdOf(payment.transactionId)).status).toBe("ACTIVE");
+    expect(await account()).toEqual({ ledgerCents: 50000, availableCents: 40000 });
+
+    await makeDue();
+    expect(await submitOnce()).toBe("submitted");
+    expect(await current(payment.id)).toMatchObject({ status: "SUBMITTED", submitAttempts: 2 });
+  });
+
+  it("401/403/409 on the last attempt of the budget give up with the hold kept", async () => {
+    const payment = await pay();
+    await db.update(payments).set({ submitAttempts: MAX_SUBMIT_ATTEMPTS - 1 }).where(eq(payments.id, payment.id));
     fake.next = "reject";
     expect(await submitOnce()).toBe("gave_up");
     await expectGivenUp(payment, "invalid_operation_error");
