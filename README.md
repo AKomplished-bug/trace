@@ -73,7 +73,19 @@ Cards use the [Increase](https://increase.com/documentation) **sandbox** (no rea
 adapter only ever calls `sandbox.increase.com`). The web app and worker refuse to start without
 `INCREASE_API_KEY` and `INCREASE_WEBHOOK_SECRET`.
 
-1. Put a sandbox API key in `.env` as `INCREASE_API_KEY`.
+Increase events reach the worker two ways, both into the same `external_events` queue: the webhook
+(when the sandbox can send one) and the worker's **events poller**, which reads `GET /events` every
+5 s for `card_payment.*` and `ach_transfer.*`. An event both deliver is stored once, with both
+deliveries recorded (`event_deliveries.source` = `webhook` / `poll`). Without webhooks, a step
+reaches the ledger within about 5 s of the simulation call.
+
+1. Put a sandbox API key in `.env` as `INCREASE_API_KEY`. An **anonymous sandbox** (`POST
+   https://sandbox.increase.com/groups`, no dashboard) works, with two limits: it can't create event
+   subscriptions (409 "Exceeded number of allowed webhook subscriptions 0"), so the poller is the only
+   delivery path and `INCREASE_WEBHOOK_SECRET` can be any non-empty value; and it has no default
+   entity, so accounts need an `entity_id`. Create one entity by hand, once (`POST /entities`, e.g.
+   structure `corporation`; see https://increase.com/documentation/api/entities#create-an-entity).
+   Its ids carry a `sandbox_` prefix (`sandbox_card_…`), which the adapter accepts.
 2. Link the seeded card to a real sandbox card (once; re-running is a no-op):
 
    ```sh
@@ -81,18 +93,20 @@ adapter only ever calls `sandbox.increase.com`). The web app and worker refuse t
    ```
 
    It needs only `DATABASE_URL` and `INCREASE_API_KEY`, never prints the key, and logs the
-   Increase account and card ids. The sandbox account gets a $100,000 inbound ACH credit so
-   Increase doesn't decline authorizations; that float is Increase's, not Trace's ledger.
-3. Expose the local app (e.g. `ngrok http 3000`) and create an event subscription in the Increase
-   dashboard (sandbox) pointing at `https://<tunnel>/api/webhooks/increase`, ideally limited to
-   `card_payment.created` and `card_payment.updated`. Put its shared secret in `.env` as
-   `INCREASE_WEBHOOK_SECRET` and restart `npm run dev`. Webhooks are verified with Standard
-   Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature`; 5-minute tolerance).
-   **Sandbox webhooks are not retried**, so one missed while the app is down is lost until the
-   Events API backstop lands.
+   Increase entity, account and card ids. The account belongs to `INCREASE_ENTITY_ID` if set, else to
+   the only active entity; with none, or several, it stops and says so (it never creates one). The sandbox
+   account gets a $100,000 inbound ACH credit so Increase doesn't decline authorizations; that float
+   is Increase's, not Trace's ledger.
+3. Optional, if your sandbox allows event subscriptions: expose the local app (e.g. `ngrok http
+   3000`) and create one in the Increase dashboard (sandbox) pointing at
+   `https://<tunnel>/api/webhooks/increase`, ideally limited to `card_payment.created`,
+   `card_payment.updated`, `ach_transfer.created` and `ach_transfer.updated`. Put its shared secret
+   in `.env` as `INCREASE_WEBHOOK_SECRET` and restart `npm run dev`. Webhooks are verified with
+   Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature`; 5-minute tolerance).
+   Sandbox webhooks are not retried; the poller picks up any that are missed.
 4. Keep `npm run worker` running, sign in as the owner (same login as for funding), and drive the card. Each call asks the
    sandbox to simulate a step and returns `202`; the change reaches the ledger only through
-   Increase's `card_payment.*` webhook and the worker (watch it in the activity view):
+   Increase's `card_payment.*` event (polled or webhook) and the worker (watch it in the activity view):
 
    ```sh
    curl -s -c /tmp/trace.jar localhost:3000/api/auth/login -H 'content-type: application/json' \
@@ -115,9 +129,8 @@ adapter only ever calls `sandbox.increase.com`). The web app and worker refuse t
 
 Payments use the same Increase sandbox setup as cards. `npm run increase:bootstrap` also links the
 seeded account to its Increase sandbox account, which sends the ACH transfers. Re-run it once if
-your card was linked before payments existed. Add `ach_transfer.created` and `ach_transfer.updated`
-to the event subscription, and keep `npm run worker` running: it submits payments (the outbox) as
-well as processing events.
+your card was linked before payments existed. Keep `npm run worker` running: it submits payments
+(the outbox) and polls `ach_transfer.*` events as well as processing them.
 
 ```sh
 curl -s -c /tmp/trace.jar localhost:3000/api/auth/login -H 'content-type: application/json' \
@@ -131,7 +144,7 @@ The response is the `PENDING` payment (account number shown as its last four dig
 drops by $100 at once (a pending-payment hold) while the ledger is unchanged. Within a second the
 worker sends it to Increase with the idempotency key `payment-<id>` and it becomes `SUBMITTED`, with
 the ACH transfer id as its external reference. Then drive the network steps, using the payment's
-`id` (each returns `202` and changes nothing until Increase's webhook is processed):
+`id` (each returns `202` and changes nothing until Increase's event is processed):
 
 ```sh
 P=<payment id>
@@ -194,6 +207,7 @@ browser ── HTTPS ──▶ CloudFront ── HTTP ──▶ ALB (CloudFront 
 ENV_FILE=.env infra/aws/bootstrap.sh   # once (re-runnable): ECR, log group, security groups, secrets, execution role, RDS, ALB, ECS cluster, CloudFront, budget
 infra/aws/deploy.sh                    # each release: build + push the commit's image, migrate, roll trace-web and trace-worker
 infra/aws/run-task.sh seed             # once, and after rotating a password: the base seed (Acme Inc., owner + ops users with passwords, $0 account, card)
+infra/aws/run-task.sh increase-bootstrap  # once, after the seed and a real trace/INCREASE_API_KEY: link the seeded card and account to Increase
 ```
 
 - `deploy.sh` refuses a dirty tree (images are tagged by commit), runs `db:migrate` as a one-off
