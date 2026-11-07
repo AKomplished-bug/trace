@@ -251,7 +251,8 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
   /**
    * https://increase.com/documentation/api/card-payments#list-card-payments, filtered by
    * `created_at.on_or_after` / `created_at.before`. A card payment has no update time, so
-   * `updatedAt` is its latest element's `created_at`.
+   * `updatedAt` is its latest element's `created_at`. Exercised only through the SDK and the fake,
+   * not against the live sandbox.
    */
   async listCardPayments(window: ListWindow, filter: { cardId: string }, signal?: AbortSignal): Promise<ListResult<ListedCardPayment>> {
     return this.listAll(
@@ -361,7 +362,8 @@ export class IncreaseAdapter implements CardProvider, TransferProvider {
   /**
    * https://increase.com/documentation/api/ach-transfers#list-ach-transfers, filtered by
    * `created_at.on_or_after` / `created_at.before`. A transfer has no update time, so `updatedAt` is
-   * the latest of its creation, submission, settlement and return.
+   * the latest of its creation, submission, settlement and return. Exercised only through the SDK
+   * and the fake, not against the live sandbox.
    */
   async listTransfers(window: ListWindow, filter: { accountId: string }, signal?: AbortSignal): Promise<ListResult<ListedTransfer>> {
     return this.listAll(

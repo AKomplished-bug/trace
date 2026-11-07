@@ -987,3 +987,206 @@ of the action here, not auxiliary to it.
 
 **Tradeoff**
 A failing audit insert fails the Ops action. That's intended.
+
+## 2026-11-07 — Reconciliation runs are a job on `reconciliation_runs`, one active run per provider
+
+**Decision**
+`POST /api/ops/reconciliation/run` inserts a PENDING run `ON CONFLICT DO NOTHING` against a partial
+unique index on `provider` `WHERE status IN ('PENDING','RUNNING')`, and returns the active run if
+there is one (200 instead of 201). The worker claims runs like events (attempts, `claim_token`
+fence, lease in `next_attempt_at`; FAILED after 3 claims that never finished), fetches with no
+transaction open, then classifies and inserts every record and marks SUCCEEDED in one transaction
+that re-checks the claim. A failed fetch (or any error) marks the run FAILED at once with a
+sanitized error; Ops retry works only from FAILED, under the run row lock, audited.
+
+**Why**
+The index makes a double click and two concurrent requests harmless without application checks.
+One active run per provider, rather than per window, also stops two overlapping windows from
+recording the same pair twice at once. A fetch failure is usually the provider being down or a
+bad key; retrying with backoff would hide that for half an hour, and a reconciliation is cheap to
+re-request.
+
+**Alternatives**
+Uniqueness on (provider, window) (two overlapping runs could interleave); backoff retries like
+events; running the comparison inside the API request (a 60 s provider fetch in a request).
+
+**Tradeoff**
+A request for a different window waits until the provider's active run finishes.
+
+## 2026-11-07 — Reconciliation runs in its own loop in the worker process
+
+**Decision**
+The worker runs two loops on one pool: the existing one (one event, one payment submission per
+pass) and a reconciliation loop that claims and executes runs, polling every 5 s when none is due.
+Shutdown waits for a run in progress before closing the pool.
+
+**Why**
+A run's fetch phase can take up to 60 s. In the shared loop that would stall webhook events and
+payment submission behind it.
+
+**Alternatives**
+A separate reconciliation process; a shorter fetch deadline.
+
+**Tradeoff**
+One more concurrent connection user in the worker (a run holds one connection for its
+transaction). Several worker instances still claim runs safely through the claim and fence.
+
+## 2026-11-07 — Runs are requested by Ops only; no schedule yet
+
+**Decision**
+The worker runs reconciliation only when a run row exists. There is no interval job.
+
+**Why**
+A schedule needs a decision about window boundaries (overlapping windows re-report the same
+exceptions; see the queue below) and about provider rate limits, and the demo needs a
+deterministic, on-demand run. The run table, claim and retry already make a scheduler a small
+addition: insert a run per provider on an interval, and the unique index absorbs overlaps.
+
+**Alternatives**
+A worker interval (e.g. hourly for the last 24 h).
+
+**Tradeoff**
+Nothing reconciles unless someone asks; a missed webhook is only found when Ops runs it.
+
+## 2026-11-07 — Classification: pairing, grace window and what counts as our amount
+
+**Decision**
+Pure `classify` in `domain/reconciliation`. Records pair on (type, provider object id), else on
+our transaction id the provider record names (PaymentIntent `metadata.transaction_id`, ACH
+idempotency key `payment-<payment id>`). Per type: FUNDING ↔ PaymentIntent (succeeded → SETTLED
+for `amount_received`, ref = charge); CARD_PURCHASE ↔ card payment (one record per settlement,
+SETTLED for the settled amount, else the first void/expiry, else AUTHORIZED for what's still
+authorized; any unmodelled element → UNSUPPORTED); CARD_REVERSAL ↔ each refund element;
+OUTBOUND_PAYMENT ↔ ACH transfer (rejected → FAILED, returned before settling → RETURNED, settled
+→ COMPLETED, else SUBMITTED); PAYMENT_RETURN ↔ the same transfer when returned after settling.
+Then: several provider records for one of ours → the tracked one is compared, the rest DUPLICATE;
+different status → PENDING_EXTERNAL if either side changed in the last hour, else STATUS_MISMATCH;
+same status, different amount or non-USD → AMOUNT_MISMATCH; the provider's element not a
+`provider_ref` on our trace → STATUS_MISMATCH (`reference`); unpaired → MISSING_EXTERNAL /
+MISSING_INTERNAL, PENDING_EXTERNAL within the hour; a FAILED transaction the provider never had →
+MATCHED. Our amount is the posted ledger entry plus ADJUSTMENTs linked to it. Provider lists are
+read 1 h beyond each window edge; unpaired records outside the window are not reported.
+
+**Why**
+The grace window is longer than an event's retry budget (~36 min), so a webhook still in retry
+isn't reported missing. PENDING_EXTERNAL covers either side catching up because the spec's
+question is "not arrived yet vs disagrees", whichever side is late. Amount differences between two
+final states don't resolve themselves, so they aren't graced. Counting linked adjustments means a
+resolved difference matches on the next run without editing the original.
+
+**Alternatives**
+A separate PENDING_INTERNAL status (the spec lists seven); grace on every difference; comparing
+the purchase's authorized amount.
+
+**Tradeoff**
+PENDING_EXTERNAL also means "our side is behind". A pair split across the window edge by more than
+an hour is reported missing. Partial refunds pair one by one, so a refund we never applied shows as
+MISSING_INTERNAL rather than as a lower purchase amount.
+
+## 2026-11-07 — The exceptions queue is each provider's latest successful run
+
+**Decision**
+`GET /api/ops/reconciliation` shows unresolved, non-MATCHED records of each provider's latest
+SUCCEEDED run, oldest first, plus counts by status for those runs. Records are never updated
+except `resolved_at`.
+
+**Why**
+Every run records the full picture, so earlier runs' exceptions are either repeated in the latest
+run or no longer true. Reading the latest run avoids merging runs.
+
+**Alternatives**
+Open exceptions across all runs (the same exception once per run); carrying resolutions forward to
+later runs by (transaction, external id, status).
+
+**Tradeoff**
+An exception resolved with a note only (no adjustment) comes back on the next run, because both
+sides still disagree. Carrying the resolution forward is the follow-up.
+
+## 2026-11-07 — Resolving an investigation: one transaction, an ADJUSTMENT at most once
+
+**Decision**
+One investigation per record (`UNIQUE(record_id)`; opening again returns it). Resolve locks the
+investigation row, then the record, then (with an adjustment) the account, and in that one
+transaction: posts a new SETTLED `ADJUSTMENT` (signed `adjustmentCents`, `related_transaction_id`
+= the investigated transaction, `idempotency_key` `investigation-<id>`) through `postLedgerEntry`
+followed by its STATUS_CHANGED; adds the note; sets the investigation RESOLVED and
+`reconciliation_records.resolved_at` (`WHERE resolved_at IS NULL`); writes the audit row. A
+second submit waits on the lock, finds RESOLVED and gets 409. An adjustment is allowed only on an
+AMOUNT_MISMATCH whose transaction has a posted ledger entry (otherwise 422: resolve with a note),
+and only for the exact amount that brings the transaction's current posted net — its own entry
+plus ADJUSTMENTs already linked to it, read under the account lock — to the record's provider
+amount (otherwise 409, naming the expected amount). At most one investigation per transaction is
+OPEN at a time (partial unique index); opening another record of the same transaction returns it.
+
+**Why**
+Rule 2 (append-only ledger) and rule 9 (every financial change on the trace) hold because the
+adjustment goes through the same services as every other posting; rule 10 order is
+LEDGER_POSTED then STATUS_CHANGED. The conditional state transition is what makes it exactly once;
+the unique idempotency key is the backstop. Linking the adjustment to the original makes the
+owner's transaction page show it under Linked transactions and lets reconciliation count it.
+
+**Alternatives**
+An `Idempotency-Key` header from the browser; a separate adjustment endpoint; editing the record's
+status to RESOLVED (it would lose what the comparison found); trusting the amount the form sends.
+
+**Tradeoff**
+Lock order gains a prefix (investigation → record → account). No API reads accounts before an
+investigation, so it can't deadlock, but any new path that touches both must follow it. Overlapping
+runs record the same difference more than once; the recompute is what stops a second case on
+another record from adjusting again (409 "already matches"). The page pre-fills the only accepted
+amount and hides the field when no adjustment is allowed.
+
+## 2026-11-07 — The demo mismatch is reconciled in-process against the provider fakes
+
+**Decision**
+`npm run demo:reconcile` seeds the demo story and runs one reconciliation of provider `demo`
+in its own process, against the test fakes: Stripe agrees with the funding, Increase reports the
+$65 settlement as $80. The worker never claims `demo` runs and the API refuses `provider: demo`.
+
+**Why**
+The demo story uses provider `demo` so it can't be confused with real sandbox records; reconciling
+it against the real sandboxes would only report it missing. The fakes run the real adapters'
+list code, so the demo exercises the same path as a real run.
+
+**Alternatives**
+Writing reconciliation records directly in the seed (skips the run path); seeding real sandbox
+records (needs keys, not reproducible).
+
+**Tradeoff**
+The fakes (test code) are imported by a dev script. `services/demo.ts` is never imported by app
+code, so they stay out of the build.
+
+## 2026-11-07 — Provider list reads for reconciliation
+
+**Decision**
+`listPayments` (Stripe `GET /v1/payment_intents`, `created[gte]`/`created[lt]` in Unix seconds,
+`starting_after` while `has_more`), `listCardPayments` and `listTransfers` (Increase
+`GET /card_payments`, `GET /ach_transfers`, `created_at.on_or_after`/`created_at.before`, `cursor` =
+`next_cursor`). 100 per page, the adapter's 10 s timeout per page, every page's request id
+returned for the log line, stop between pages once the run's deadline passes, error past 50 pages.
+Increase lists are filtered to our records: card payments by `card_id` (each linked
+`cards.provider_id`), transfers by `account_id` (each linked `accounts.provider_id`). Stripe
+PaymentIntents without a valid `transaction_id` metadata (we set it on every one we create) are
+dropped and counted in `reconciliation_foreign_records_total{provider}`. Refunds and returns can
+come long after their parent was created, so after the lists the run retrieves by id each parent
+an in-window CARD_REVERSAL (via its purchase) or PAYMENT_RETURN points at that wasn't listed, within
+the same deadline (at most 100; a 4xx means the provider has none, and the child reports
+MISSING_EXTERNAL). Increase objects have no update time, so `updatedAt` is the latest element (card
+payment) or the latest of created/submitted/settled/returned (transfer).
+
+**Why**
+Bounded reads with a visible failure beat a silently partial comparison. A shared sandbox or Stripe
+account holds other people's records, which would otherwise fill the queue with MISSING_INTERNAL. The Increase filter names
+are the SDK's (generated from Increase's API spec) and the fake asserts the SDK sends them; the
+Stripe ones are the SDK's typed params.
+
+**Alternatives**
+SDK auto-pagination (no per-page request id, no deadline between pages); Increase's Events API
+instead of object lists.
+
+**Tradeoff**
+A card or account not linked to Increase isn't reconciled at all. An unlinked refund (on its own
+card payment) has no purchase to retrieve; its card payment is created with it, so the list finds
+it. Stripe's window is widened to whole seconds. More than 5,000 records per provider per window fails
+the run; shorter windows are the workaround. Not verified against the live APIs: the exact query
+encoding Stripe and Increase accept for these filters (only the SDKs and our fakes were exercised).

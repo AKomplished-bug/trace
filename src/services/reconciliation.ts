@@ -125,7 +125,7 @@ export async function requestRun(
     if (!active) throw new Error(`reconciliation run for ${input.provider} conflicted but no active run was found`);
     return { outcome: "already_active", run: active };
   });
-  countOutcome("reconciliation_requests_total", { provider: input.provider, outcome: result.outcome });
+  countOutcome("reconciliation_requests_total", { outcome: result.outcome });
   return result;
 }
 

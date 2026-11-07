@@ -90,7 +90,10 @@ Dependency direction: `app`, `worker` → `services` → `domain`, `db`, `integr
 ## Locks
 
 - Order, always: **event row → account row → transaction / hold / payment rows.** Taking them
-  in one order is what rules out deadlocks between the worker and API commands.
+  in one order is what rules out deadlocks between the worker and API commands. Ops resolution
+  puts its own rows first: **investigation row → reconciliation record row → account row → …**.
+  A reconciliation run locks only its run row; it reads ours and inserts records, never locks
+  accounts.
 - The account row is the serialization point for its money: every writer of ledger entries,
   holds or trace rows takes `SELECT … FOR NO KEY UPDATE` on it first (`lockAccount`). NO KEY
   so inserts that reference the account aren't blocked by FK checks.
@@ -171,6 +174,43 @@ MISSING_EXTERNAL, DUPLICATE, PENDING_EXTERNAL`. A grace window separates "not ar
 (PENDING_EXTERNAL) from "missing". Ops resolution never edits history: it writes a note, an
 audit event, and optionally an `ADJUSTMENT` ledger entry.
 
+- **Classification** is pure (`domain/reconciliation`, `classify`). Pairs on (type,
+  `provider_object_id`), else on our transaction id the provider record names (PaymentIntent
+  `metadata.transaction_id`; ACH idempotency key `payment-<payment id>`). The provider element
+  behind its state (charge, settlement, refund, return id) must be a `provider_ref` on our trace.
+  Our amount is the posted ledger entry **plus ADJUSTMENTs linked to it** (`related_transaction_id`),
+  else the transaction amount. Grace 1 h: a status difference or an unpaired record whose side
+  changed within it is PENDING_EXTERNAL (either side may be catching up); amount differences
+  between equal statuses are never pending. A second provider record for one of ours is DUPLICATE.
+  A FAILED transaction the provider never had is MATCHED (`nothing_at_provider`).
+- **Runs** (`services/reconciliation.ts`): `reconciliation_runs` is the job. `POST
+  /api/ops/reconciliation/run` inserts PENDING `ON CONFLICT DO NOTHING` against a partial unique
+  index (one PENDING/RUNNING run **per provider**); a repeat or concurrent request gets that run
+  back. The worker claims like an event (attempts, `claim_token` fence, lease) in **its own loop**
+  (a run never stalls events or payment submission), fetches with no transaction open: provider
+  list reads widened by 1 h each side and scoped to our records (Increase card payments per linked
+  `cards.provider_id`, transfers per linked `accounts.provider_id`; Stripe PaymentIntents without a
+  valid `transaction_id` metadata are dropped and counted), then a retrieve by id of each parent an
+  in-window refund or return points at that the lists missed (a linked CARD_REVERSAL's purchase
+  card payment, a PAYMENT_RETURN's transfer; ≤ 100), all within one 60 s deadline, ≤ 50 pages per
+  list. Then in one transaction that still owns the claim loads ours, classifies, inserts every
+  `reconciliation_records` row and marks SUCCEEDED. Any failure is FAILED at once with a
+  sanitized error; `POST /api/ops/reconciliation/:id/retry` works only from FAILED (audited,
+  409 otherwise or when the provider has another active run). Runs are requested by Ops only;
+  there is no schedule. Provider `demo` is reconciled only by `npm run demo:reconcile` (fakes).
+- **Exceptions queue** = unresolved non-MATCHED records of each provider's latest SUCCEEDED run.
+- **Investigations** (`services/investigations.ts`): one per record (`UNIQUE(record_id)`) and at
+  most one OPEN per transaction (partial unique index); opening either again returns that case.
+  Resolve runs in one transaction under the investigation row lock, conditional on OPEN: note;
+  optional ADJUSTMENT — only on an AMOUNT_MISMATCH whose transaction has posted (else 422), and only
+  the amount that brings the current posted net (own entry + linked ADJUSTMENTs, read under the
+  account lock) to the provider's amount (else 409) — (status SETTLED, `related_transaction_id` = the investigated transaction,
+  `idempotency_key` = `investigation-<id>`) posted with `postLedgerEntry`, then its
+  STATUS_CHANGED (rule 10); `investigations` → RESOLVED; `reconciliation_records.resolved_at`
+  set `WHERE resolved_at IS NULL`; audit row. A double submit is 409 and posts nothing. The
+  record's comparison columns are never edited. Ops responses carry ids, amounts and statuses:
+  no payloads, no counterparty or payee names.
+
 ## External calls
 
 - Every provider call goes through its adapter, has a timeout (default 10 s), logs the provider
@@ -208,7 +248,9 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
   `funding_requests_total{outcome}`, `funding_outcomes_total{outcome}`,
   `card_steps_total{kind,outcome}`, `payment_steps_total{kind,outcome}`, `payment_submissions_total{outcome}`,
   `ops_event_retries_total{outcome}`, `ops_payment_actions_total{action,outcome}`,
-  `replay_mismatch_total{scope}`.
+  `replay_mismatch_total{scope}`, `reconciliation_requests_total{outcome}`,
+  `reconciliation_runs_total{provider,outcome}`, `reconciliation_results_total{provider,status}`,
+  `reconciliation_foreign_records_total{provider}`, `investigation_actions_total{action,outcome}`.
 - State is counted from the tables, not counters: events by status and the payment backlog
   (`given_up_payments` …). `GET /api/ops/metrics` (OPS, JSON) returns both; `/ops` shows them.
 
@@ -240,6 +282,7 @@ npm run db:up        # Postgres 16 in docker on localhost:5433 (databases trace,
 npm run db:migrate   # apply src/db/migrations to DATABASE_URL
 npm run db:seed      # idempotent demo data (Acme Inc., owner + ops users, $0 account, card)
 npm run db:seed:demo # optional, dev only: base seed + the $500 → $80 auth → $65 settle story
+npm run demo:reconcile # dev only: demo story + one reconciliation against the fakes (Increase says $80)
 npm run db:generate  # write a new SQL migration from src/db/schema.ts (review and commit it)
 npm run dev          # Next.js web + API
 npm run worker       # event worker (src/worker/index.ts)

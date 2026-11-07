@@ -132,7 +132,8 @@ export class StripeAdapter implements PaymentProvider {
   /**
    * https://docs.stripe.com/api/payment_intents/list: newest first, `created[gte]` / `created[lt]`
    * in Unix seconds (so the window is widened to whole seconds), up to 100 per page, next page via
-   * `starting_after` = the last id while `has_more`. Each page has the SDK timeout.
+   * `starting_after` = the last id while `has_more`. Each page has the SDK timeout. Exercised only
+   * through the SDK and the fake, not against live Stripe.
    */
   async listPayments(window: ListWindow, signal?: AbortSignal): Promise<ListResult<ListedPayment>> {
     const result: ListResult<ListedPayment> = { items: [], requestIds: [] };
