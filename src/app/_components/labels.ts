@@ -81,3 +81,93 @@ export const ENTRY_LABELS: Record<LedgerEntryType, string> = {
   PAYMENT_RETURN_CREDIT: "Payment return credit",
   ADJUSTMENT: "Adjustment",
 };
+
+/** How a status reads at a glance; every badge pairs the tone with its label and an icon. */
+export type Tone = "pending" | "success" | "danger" | "neutral";
+
+export const STATUS_TONES: Record<TransactionStatus, Tone> = {
+  PENDING: "pending",
+  AUTHORIZED: "pending",
+  SUBMITTED: "pending",
+  SETTLED: "success",
+  COMPLETED: "success",
+  REVERSED: "neutral",
+  RETURNED: "neutral",
+  EXPIRED: "neutral",
+  FAILED: "danger",
+};
+
+/** Money that is reserved or still on its way: the row is styled as pending. */
+export function isInFlight(view: AmountView): boolean {
+  return view.kind === "held" || view.kind === "pending";
+}
+
+export type EventStatus = "RECEIVED" | "PROCESSING" | "PROCESSED" | "RETRY" | "FAILED" | "IGNORED";
+
+export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
+  RECEIVED: "Received",
+  PROCESSING: "Processing",
+  PROCESSED: "Processed",
+  RETRY: "Retrying",
+  FAILED: "Failed",
+  IGNORED: "Ignored",
+};
+
+export const EVENT_STATUS_TONES: Record<EventStatus, Tone> = {
+  RECEIVED: "pending",
+  PROCESSING: "pending",
+  RETRY: "pending",
+  PROCESSED: "success",
+  FAILED: "danger",
+  IGNORED: "neutral",
+};
+
+export type ReconciliationStatus =
+  | "MATCHED"
+  | "AMOUNT_MISMATCH"
+  | "STATUS_MISMATCH"
+  | "MISSING_INTERNAL"
+  | "MISSING_EXTERNAL"
+  | "DUPLICATE"
+  | "PENDING_EXTERNAL";
+
+export const RECONCILIATION_STATUS_LABELS: Record<ReconciliationStatus, string> = {
+  MATCHED: "Matched",
+  AMOUNT_MISMATCH: "Amount mismatch",
+  STATUS_MISMATCH: "Status mismatch",
+  MISSING_INTERNAL: "Missing in Trace",
+  MISSING_EXTERNAL: "Missing at provider",
+  DUPLICATE: "Duplicate",
+  PENDING_EXTERNAL: "Waiting on provider",
+};
+
+export const RECONCILIATION_STATUS_TONES: Record<ReconciliationStatus, Tone> = {
+  MATCHED: "success",
+  AMOUNT_MISMATCH: "danger",
+  STATUS_MISMATCH: "danger",
+  MISSING_INTERNAL: "danger",
+  MISSING_EXTERNAL: "danger",
+  DUPLICATE: "danger",
+  PENDING_EXTERNAL: "pending",
+};
+
+export type RunStatus = "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
+
+export const RUN_STATUS_LABELS: Record<RunStatus, string> = {
+  PENDING: "Queued",
+  RUNNING: "Running",
+  SUCCEEDED: "Succeeded",
+  FAILED: "Failed",
+};
+
+export const RUN_STATUS_TONES: Record<RunStatus, Tone> = {
+  PENDING: "pending",
+  RUNNING: "pending",
+  SUCCEEDED: "success",
+  FAILED: "danger",
+};
+
+/** A bank account number shown as its last four digits only. */
+export function maskedAccount(last4: string): string {
+  return `•••• ${last4.slice(-4)}`;
+}
