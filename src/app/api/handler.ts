@@ -12,6 +12,8 @@ export interface HandlerDeps {
 
 export interface RequestScope {
   log: Logger;
+  /** This request's correlation id (on every log line; recorded with audit events). */
+  correlationId: string;
   /** Entity ids for the outcome line (e.g. account_id, transaction_id), once known. */
   annotate(fields: Record<string, unknown>): void;
 }
@@ -38,11 +40,12 @@ export async function withRequestLog(
   route: string,
   body: (scope: RequestScope) => Promise<Response>,
 ): Promise<Response> {
-  const log = deps.logger.child({ correlation_id: newId(), route });
+  const correlationId = newId();
+  const log = deps.logger.child({ correlation_id: correlationId, route });
   const fields: Record<string, unknown> = {};
   let response: Response;
   try {
-    response = await body({ log, annotate: (more) => Object.assign(fields, more) });
+    response = await body({ log, correlationId, annotate: (more) => Object.assign(fields, more) });
   } catch (error) {
     log.error({ ...fields, outcome: "error", err: safeErrorForLog(error) }, "request failed");
     return errorResponse(500, "internal_error", "Something went wrong on our side; try again");
