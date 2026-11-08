@@ -1,5 +1,7 @@
 # Decision log
 
+The full working log, written as the work progressed; some early entries are superseded. [DECISIONS.md](../DECISIONS.md) is the summary.
+
 ## 2026-11-07 — Modular monolith: Next.js + one Node worker + Postgres
 
 **Decision**
