@@ -316,7 +316,8 @@ audit event, and optionally an `ADJUSTMENT` ledger entry.
 - Every new query path on a growing table gets an index.
 - Branch per change from fresh `origin/main`; PRs are reviewed before merge. Commit as
   `athulkrishna8781@gmail.com`, single-line imperative messages, stage by path.
-- Record every non-obvious decision in `DECISIONS.md` (spec format) in the same PR.
+- Record every non-obvious decision in `docs/decision-log-full.md` (spec format) in the same PR, and
+  add it to `DECISIONS.md` (a key entry or a table row).
 
 ## Commands
 

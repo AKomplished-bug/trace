@@ -169,7 +169,8 @@ export type RetryResult =
  * Ops retry of a FAILED event: FAILED → RETRY with attempts reset (a fresh retry budget),
  * claim_token bumped and due now, plus its audit row, in one transaction. The event row is locked
  * first, so a concurrent or repeated retry waits and then finds RETRY: not_retryable, never a
- * second reset. Only FAILED is retryable (see DECISIONS.md).
+ * second reset. Only FAILED is retryable (see docs/decision-log-full.md, "Ops retry works only
+ * from FAILED").
  */
 export async function retryEvent(
   db: Db,
