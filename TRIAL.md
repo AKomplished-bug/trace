@@ -54,7 +54,7 @@ dialog), balance explanation.
 Ops: needs-attention work queue first (failed events, given-up payments, open exceptions, open
 investigations) then metrics and latency; events, payments, reconciliation and investigations
 with every action behind a confirmation. shadcn/ui on Radix, one accent, system dark mode, WCAG
-2.2 AA (see `DECISIONS.md`).
+2.2 AA (see [the accessibility decision](docs/decision-log-full.md#2026-11-07--accessibility-target-wcag-22-aa-checked-with-axe-and-a-scripted-keyboard-pass)).
 
 ## Out of scope (and why)
 Real money/banking, physical cards, KYC/AML, multi-currency, payroll/accounting, complex
@@ -74,7 +74,7 @@ and each would cost hours we need for depth.
 
 ## Open questions
 - Deployment target (Corgi-provided AWS vs our choice) — needed by hour 6 for Stripe webhooks.
-- Second provider: Increase chosen (see `DECISIONS.md`).
+- Second provider: Increase chosen (see [the Increase decision](docs/decision-log-full.md#2026-11-07--increase-sandbox-for-card-lifecycle-and-outbound-payments)).
 
 ## What we'd do next
 _Filled in at the end._ Already known:

@@ -5,7 +5,7 @@ balance is. Trace tells you why.**
 
 - Plan and write-up: [TRIAL.md](TRIAL.md)
 - Architecture and invariants: [CLAUDE.md](CLAUDE.md)
-- Decisions: [DECISIONS.md](DECISIONS.md)
+- Decisions: [DECISIONS.md](DECISIONS.md) (summary; full log in [docs/decision-log-full.md](docs/decision-log-full.md))
 - Product spec: [docs/product-spec.md](docs/product-spec.md)
 - Sandbox integration evidence (Stripe test mode, Increase sandbox, deployed): [docs/sandbox-evidence.md](docs/sandbox-evidence.md)
 

@@ -147,7 +147,7 @@ const balancesOf = (state: Balances): Balances => ({ ledgerCents: state.ledgerCe
  * settlement step shows the balances the account actually had; the HOLD_RELEASED step then
  * changes nothing. If a pairing were ever wrong, the replayed balances wouldn't match the
  * recorded ones and the replay would report it, not hide it. (We record no database transaction
- * id per row; see DECISIONS.md.)
+ * id per row; see docs/decision-log-full.md, "Replay folds the recorded trace".)
  */
 export function pairSettlements(events: ReadonlyArray<ReplayEvent>): AppliedEvent[] {
   const paired: AppliedEvent[] = events.map((event) => ({ ...event }));
