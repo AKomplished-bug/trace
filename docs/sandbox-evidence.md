@@ -26,6 +26,18 @@ timestamps are whole seconds. Ours come from `transaction_events` and `external_
 The balance went from ledger $345.00 / available $345.00 to ledger $595.00 / available $595.00,
 which is +$250.00 on both.
 
+### On Stripe's side: the Stripe dashboard
+
+Stripe's own dashboard (test mode, Transactions; times in IST, UTC+5:30) lists every PaymentIntent
+in the test account:
+- **Green:** the $250.00 from flow (a), `pi_3UZBd7…RLphEln`, Succeeded at 21:04 IST (15:34 UTC).
+- **Amber:** the two $500.00 PaymentIntents from local dev runs that reconciliation flagged as
+  MISSING_INTERNAL (see [Reconciliation](#reconciliation)): `pi_3UZ8Ss…4vQKXZ` and `pi_3UZ3P6…dLmluTl`.
+- The other $500.00 and $10.00 rows are earlier and later fundings from the deployed app and the
+  walkthrough recordings.
+
+![Stripe dashboard, test-mode transactions](evidence/stripe-dashboard-payments.png)
+
 ## (b) Increase card: `POST /api/cards/:id/authorize`, then `…/settle`
 
 Card `00000000-0000-4000-8000-000000000031`. At Increase it is `sandbox_card_f8gp0xczuusxnnhrpd9y`.
@@ -170,6 +182,9 @@ records both the open and the resolve actions.
   `/api/payments/:id/{submit,settle}` call Increase's sandbox simulation endpoints. They write
   nothing themselves: our books change only when the resulting Increase event arrives and the
   worker applies it.
+- **No Increase dashboard screenshots.** We use Increase's anonymous API sandbox, created through
+  its API without an account, so there is no dashboard to capture. Increase's side is shown by its
+  own API responses: every Increase id in this page was read back with a GET to the sandbox API.
 - **Increase events come from polling, not webhooks.** The anonymous Increase sandbox has no
   webhook subscriptions, so the worker polls `GET /events` every 5 s. The polled events go
   through the same ingestion path as a webhook body would. The Increase webhook route exists and
