@@ -1,6 +1,6 @@
 # Decision log
 
-The full working log, written as the work progressed; some early entries are superseded. [DECISIONS.md](../DECISIONS.md) is the summary.
+The full working log, written as the work progressed. Some of the early decisions were changed later, so this is meant to show how the system ended up where it is, not pretend every early choice was final. [DECISIONS.md](../DECISIONS.md) is the summary.
 
 ## 2026-11-07 — Modular monolith: Next.js + one Node worker + Postgres
 
@@ -8,7 +8,7 @@ The full working log, written as the work progressed; some early entries are sup
 One TypeScript codebase deployed as two processes (Next.js web/API, worker) and one Postgres.
 
 **Why**
-The interesting problems are correctness and explainability, not scale. One codebase keeps the
+The main thing we're trying to solve is correctness and explainability, not scale. One codebase keeps the
 domain shared between API, worker and tests; two processes keep webhook ingestion fast and let
 processing retry independently.
 
@@ -16,7 +16,7 @@ processing retry independently.
 Separate API service (Fastify) + web app; microservices.
 
 **Tradeoff**
-API and UI scale together; acceptable for a single-tenant sandbox.
+API and UI scale together; fine for a single-tenant sandbox.
 
 ## 2026-11-07 — Postgres is the queue (no Redis)
 
@@ -25,7 +25,7 @@ API and UI scale together; acceptable for a single-tenant sandbox.
 `FOR UPDATE SKIP LOCKED`.
 
 **Why**
-Persisting the raw event *is* the enqueue, so there is no window where an event is stored but
+The nice thing here is that storing the raw event is basically the enqueue, so there is no window where an event is stored but
 not queued (or queued but not stored). Retry state, errors and attempts are queryable by Ops.
 
 **Alternatives**
@@ -114,7 +114,7 @@ ingestion, not from the provider.
 Each pass claims one event: `UPDATE … WHERE id = (SELECT … LIMIT 1 FOR UPDATE SKIP LOCKED)` sets
 `PROCESSING`, increments `attempts` (retry budget) and `claim_token` (fencing token), and sets
 `next_attempt_at` to a lease expiry (120 s, longer than a 10 s fetch plus one processing
-transaction). The handler's `fetch` runs after that commit with no transaction open; `apply`
+transaction). The handler does `fetch` after that commit with no transaction open; `apply`
 runs in a transaction that re-reads and locks the event row only if it is still `PROCESSING`
 with the same `claim_token`, and marks it `PROCESSED` in that same transaction. Expired
 `PROCESSING` rows are claimable again. Failures back off 5 s doubling, capped at 15 min; after
@@ -319,7 +319,7 @@ CSRF tokens on the login form; NextAuth or another provider (setup a sandbox doe
 
 **Tradeoff**
 A session can't be revoked or re-scoped before it expires except by rotating `SESSION_SECRET`;
-acceptable for fixed demo users.
+fine for fixed demo users.
 
 ## 2026-11-07 — Owner read side: snapshot reads, keyset pages, formula from the domain
 
@@ -496,7 +496,7 @@ accepting any one of several space-separated signatures, with a constant-time co
 5-minute timestamp window. The stored event type is the Increase event `category`.
 
 **Why**
-That is the scheme Increase documents (and its SDK's `unwrap` uses the raw secret as the key the
+That's the scheme Increase documents (and its SDK's `unwrap` uses the raw secret as the key the
 same way). Doing it in ~15 lines keeps the check explicit and testable without an SDK client.
 
 **Alternatives**
@@ -757,7 +757,7 @@ definite "not created". After an earlier timeout it isn't: that request may stil
 401/403/409 are our credentials, permissions or a conflict, never proof either way, and they can
 pass (a rotated key, a transient conflict), so they get the same budget as a timeout instead of
 giving up at once; they never release the hold. Leaving the
-payment `PENDING` rather than `FAILED` keeps one state machine: the provider's word, by webhook,
+payment `PENDING` rather than `FAILED` keeps one state machine: the provider's final answer, by webhook,
 still moves it, so there's no `FAILED → SUBMITTED` edge to invent.
 
 **Alternatives**
@@ -879,7 +879,7 @@ worth). Only the worker flushes once more on a clean stop (SIGTERM/SIGINT), afte
 process has no shutdown flush, so it can lose up to 5 s of counts on every deploy: Next drains
 in-flight requests and exits itself, and a flush racing that exit never landed in testing.
 `jsonb` labels mean a typo creates a new series; label values must come from fixed sets.
-There is no Prometheus text format.
+There's no Prometheus text format.
 Counters are at-least-once per flush (a flush whose commit succeeds but whose answer is lost is
 re-buffered and added again), so they are approximate: use them for rates and alerts, never for money.
 
@@ -952,7 +952,7 @@ count); a partial index is the follow-up if PENDING grows.
 `payload: "withheld"` and the page says so. The list shows provider, type, external id, status,
 attempts, next attempt, the stored (sanitized) last error, delivery count, received and processed
 times, and linked transaction ids (`external_events.transaction_id` plus the transactions of the
-trace rows the event wrote). It is keyset-paginated on `(received_at, id)` with the same opaque
+trace rows the event wrote). It's keyset-paginated on `(received_at, id)` with the same opaque
 cursor as the transaction list. The detail adds deliveries (time, duplicate or not), the trace
 steps the event wrote, the transactions touched and the Ops audit trail, all from one snapshot.
 New indexes: `external_events (received_at, id)`, `(status, received_at, id)` and
@@ -1037,7 +1037,7 @@ transaction). Several worker instances still claim runs safely through the claim
 ## 2026-11-07 — Runs are requested by Ops only; no schedule yet
 
 **Decision**
-The worker runs reconciliation only when a run row exists. There is no interval job.
+The worker runs reconciliation only when a run row exists. There's no interval job.
 
 **Why**
 A schedule needs a decision about window boundaries (overlapping windows re-report the same
@@ -1234,7 +1234,7 @@ query strings go to the origin (managed `AllViewer`), all methods are allowed. T
 group admits only the CloudFront origin-facing managed prefix list.
 
 **Why**
-There is no domain, so no ACM certificate for the ALB, and the session cookie is `Secure` in
+There's no domain, so no ACM certificate for the ALB, and the session cookie is `Secure` in
 production: HTTPS was needed without one. Forwarding `Host` keeps `checkSameOrigin` working: the
 browser's `Origin` and the `Host` the app sees are both the CloudFront domain. Webhook bodies and
 signature headers pass through unchanged, so Stripe/Increase verification works as locally.
@@ -1497,7 +1497,7 @@ values on argv) only when no behaviour has that path, so a second run changes no
 Files under `/_next/static` are content-hashed per build and Next serves them with
 `Cache-Control: public, max-age=31536000, immutable`, so a cached copy can never be stale and no
 cookie or header affects them. Pages and the API are per-user and must keep reaching the origin.
-There is no `public/` folder and no favicon, so there are no other static files to cache.
+There's no `public/` folder and no favicon, so there are no other static files to cache.
 
 **Alternatives**
 Caching more paths (pages are personalised; not safe); a separate S3 origin for static assets (a
