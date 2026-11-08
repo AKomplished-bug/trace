@@ -43,7 +43,7 @@ below says so.
 
 - **Decision:** `UNIQUE(provider, external_event_id)` for events; `Idempotency-Key` with a `request_hash` on `transactions` (`UNIQUE(account_id, idempotency_key)`, different body → 409); `UNIQUE(transaction_id, entry_type)` on ledger entries.
 - **Why:** Each layer catches a different failure: provider retries, client retries, our own worker re-running a half-processed event. Constraints, not check-then-insert, so races are harmless.
-- **Trade-off:** A little more schema. Rejected: application checks, distributed locks.
+- **Trade-off:** The `request_hash` makes any body change under the same key a 409, so clients must keep the key per body (see key decision 14). Rejected: application checks, distributed locks.
 - **Where:** `src/db/schema.ts` · [full entry](docs/decision-log-full.md#2026-11-07--three-layer-idempotency)
 
 #### 6. Replay checks the trace, and the trace has a write order
@@ -66,7 +66,7 @@ below says so.
 
 - **Decision:** A worker loop reads `GET /events` every 5 s into the same `ingestEvent` path a webhook uses (`source = 'poll'`). The cursor is a leased row, re-read with a 60 s overlap.
 - **Why:** The anonymous sandbox can't register webhook subscriptions, and sandbox webhooks aren't retried, so without polling no card or ACH step reaches the ledger. A listed event is the same object as a webhook body, so dedup and handlers are shared.
-- **Trade-off:** Up to ~5 s more latency. An event that becomes visible more than 60 s late is missed (reconciliation is the backstop).
+- **Trade-off:** Up to ~5 s more latency. An event that becomes visible more than 60 s late is missed (reconciliation is the backstop), and more than 1,000 events in one 60 s window stall the cursor.
 - **Where:** `src/services/increase-events-poller.ts` · [poller](docs/decision-log-full.md#2026-11-07--increase-events-are-also-polled-into-the-webhooks-ingestion-path), [cursor](docs/decision-log-full.md#2026-11-07--the-poll-cursor-is-its-own-leased-row-re-read-with-a-60-s-overlap)
 
 #### 9. Events about objects that aren't ours are IGNORED
@@ -80,9 +80,9 @@ below says so.
 
 #### 10. Payment outbox; an unknown outcome stays PENDING with its hold
 
-- **Decision:** `POST /api/payments` only writes the payment, its hold and trace under the account lock. The worker submits with `Idempotency-Key: payment-<id>`. A 4xx on the first attempt fails it and releases the hold; any unknown outcome (timeouts until the budget is spent, a later 4xx, a reused key) gives up with the payment still `PENDING` and its hold kept. Ops can requeue, or confirm not sent only after asking Increase.
-- **Why:** After a timeout the transfer may exist. Releasing the hold could let the owner spend money that already left. Only a first-attempt refusal is proof nothing was created.
-- **Trade-off:** A given-up payment reserves its funds until an event arrives or Ops acts. Rejected: `FAILED` on exhaustion (a late event had nowhere to go), releasing the hold on exhaustion.
+- **Decision:** `POST /api/payments` only writes the payment, its hold and trace under the account lock. The worker submits with `Idempotency-Key: payment-<id>`. A 4xx other than 401/403/409 on the first attempt fails it and releases the hold; 401/403/409 are retried with the same budget and never release it; any unknown outcome (timeouts until the budget is spent, a later 4xx, a reused key) gives up with the payment still `PENDING` and its hold kept. Ops can requeue, or confirm not sent only after asking Increase.
+- **Why:** After a timeout the transfer may exist. Releasing the hold could let the owner spend money that already left. Only a first-attempt refusal (other than 401/403/409) is proof nothing was created.
+- **Trade-off:** A given-up payment reserves its funds until an event arrives or Ops acts. (The full entry's "without the Events API backstop" caveat is closed by the poller.) Rejected: `FAILED` on exhaustion (a late event had nowhere to go), releasing the hold on exhaustion.
 - **Where:** `src/worker/payment-submitter.ts`, `src/services/ops-payments.ts` · [outbox](docs/decision-log-full.md#2026-11-07--outbound-payments-go-through-an-outbox-on-payments-sent-by-the-worker), [failures](docs/decision-log-full.md#2026-11-07--submission-failures-a-first-attempt-refusal-releases-the-hold-unknown-gives-up-pending), [Ops actions](docs/decision-log-full.md#2026-11-07--ops-resolves-a-given-up-payment-requeue-or-confirm-not-sent-after-asking-increase)
 
 ### Reconciliation
@@ -90,7 +90,7 @@ below says so.
 #### 11. Reconcile against the provider API; adjust at most once
 
 - **Decision:** Runs compare our transactions with records listed from the provider API (not our webhook copies), with a 1 h grace window for "not arrived yet". Resolving an investigation runs in one transaction under its row lock and may post one `ADJUSTMENT`, only on an `AMOUNT_MISMATCH` and only for the amount that brings the posted net to the provider's.
-- **Why:** Webhook copies can't show what we missed. Recomputing the amount under the account lock stops a second case or a double submit from adjusting twice; history is never edited.
+- **Why:** Webhook copies can't show what we missed. The investigation lock and the OPEN check stop a double submit (409); recomputing the net under the account lock stops a second case from adjusting again. An adjustment on a transaction that hasn't posted is a 422 (resolve with a note). History is never edited.
 - **Trade-off:** Runs are on request only. A note-only resolution comes back on the next run because the sides still disagree.
 - **Where:** `src/domain/reconciliation/index.ts`, `src/services/reconciliation.ts`, `src/services/investigations.ts` · [classification](docs/decision-log-full.md#2026-11-07--classification-pairing-grace-window-and-what-counts-as-our-amount), [resolution](docs/decision-log-full.md#2026-11-07--resolving-an-investigation-one-transaction-an-adjustment-at-most-once)
 
@@ -126,7 +126,7 @@ below says so.
 | Decision | Reason | Entry |
 |---|---|---|
 | Stripe test mode PaymentIntents for funding | Simplest real money-in sandbox; listable for reconciliation | [full](docs/decision-log-full.md#2026-11-07--stripe-test-mode-for-funding) |
-| Increase sandbox for cards and ACH | Self-serve, a simulation for every step we need, idempotency keys. *The planned test-only fault injector was not built.* | [full](docs/decision-log-full.md#2026-11-07--increase-sandbox-for-card-lifecycle-and-outbound-payments) |
+| Increase sandbox for cards and ACH | Self-serve, a simulation for every step we need, idempotency keys. *Superseded in part: when deployed, the Events API poll is the only Increase path, not a backstop to webhooks. The planned test-only fault injector was not built.* | [full](docs/decision-log-full.md#2026-11-07--increase-sandbox-for-card-lifecycle-and-outbound-payments) |
 | Enums for statuses; sign only on ledger entries | Illegal values unrepresentable; one place says which way money moved. *Trace kinds have since grown from five to eight.* | [full](docs/decision-log-full.md#2026-11-07--schema-conventions) |
 | Late settlement posts even if the hold closed | The provider moved the money; `SETTLED_AFTER_HOLD_CLOSED` makes it visible | [full](docs/decision-log-full.md#2026-11-07--late-settlement-posts-even-if-the-hold-already-closed) |
 | Funding calls Stripe in the request, after commit; a failed call stays `PENDING` | The owner gets the PaymentIntent id; only Stripe's webhook decides the outcome. A known exception to the outbox rule | [call](docs/decision-log-full.md#2026-11-07--funding-calls-stripe-from-the-api-request-after-commit), [failure](docs/decision-log-full.md#2026-11-07--a-failed-stripe-call-leaves-funding-pending-not-failed) |
@@ -141,7 +141,7 @@ below says so.
 | Money graph derived from the trace, plain DOM | Short chains read better as a column; no dependency | [full](docs/decision-log-full.md#2026-11-07--money-graph-derived-from-the-trace-plain-dom-links-to-records) |
 | Funds check under the account lock; a refused payment stores nothing | Available can't change between check and hold; a retry after funding succeeds | [full](docs/decision-log-full.md#2026-11-07--the-funds-check-runs-under-the-account-lock-a-refused-payment-stores-nothing) |
 | `SUBMITTED` status; FedACH submission is a trace step | Pending → Submitted → Completed / Returned, as the owner sees it | [full](docs/decision-log-full.md#2026-11-07--submitted-status-and-a-submitted_to_network-trace-step) |
-| ACH transfers without our key or from another account are not ours | *Superseded in part: now IGNORED, not a permanent FAILED* (see key decision 9) | [full](docs/decision-log-full.md#2026-11-07--ach-webhooks-re-fetch-the-transfer-apply-only-the-steps-we-havent) |
+| ACH transfers without our key or from another account are not ours | *Superseded in part: now IGNORED, not a permanent FAILED* (see key decision 9). *Its "waits for the Events API backstop" caveat is closed by the poller.* | [full](docs/decision-log-full.md#2026-11-07--ach-webhooks-re-fetch-the-transfer-apply-only-the-steps-we-havent) |
 | Recipient account number stored, read as last four only | The outbox needs it to retry; masking in the query can't leak by accident | [full](docs/decision-log-full.md#2026-11-07--the-recipient-account-number-is-stored-for-the-outbox-and-shown-as-last-four-only) |
 | Outcome counters buffered per process, summed in Postgres | Can't fail or slow the work; no new infrastructure. *The replay counter it anticipated, `replay_mismatch_total`, is wired.* | [full](docs/decision-log-full.md#2026-11-07--outcome-counters-buffered-per-process-summed-in-a-postgres-table) |
 | Request latency as a bucket histogram in the counters | Per-route p50/p95 with no new infrastructure | [full](docs/decision-log-full.md#2026-11-07--request-latency-is-a-bucket-histogram-in-the-outcome-counters) |
